@@ -3,6 +3,7 @@ const User = require('../models/users/User');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const dayjs = require('dayjs');
+const createLog = require('../utils/createLog');
 
 // Calculate suspension end date
 const calculateSuspensionEndDate = (duration, unit) => {
@@ -122,7 +123,18 @@ const createSuspension = catchAsync(async (req, res, next) => {
   
   // Update user status to "Suspend"
   await User.findByIdAndUpdate(userId, { status: 'Suspend' });
-  
+
+  // Activity log
+  createLog({
+    actorId: req.user._id,
+    actorModel: 'admin',
+    action: 'SUSPEND_USER',
+    description: `Suspended ${user.email} — Reason: ${reason || 'No reason provided'}`,
+    target: 'User',
+    targetId: userId,
+    ipAddress: req.ip || req.headers['x-forwarded-for'],
+  });
+
   res.status(201).json({
     success: true,
     message: 'User suspended successfully',
@@ -153,7 +165,18 @@ const liftSuspension = catchAsync(async (req, res, next) => {
   
   // Update user status back to "Active"
   await User.findByIdAndUpdate(suspension.userId, { status: 'Active' });
-  
+
+  // Activity log
+  createLog({
+    actorId: req.user._id,
+    actorModel: 'admin',
+    action: 'LIFT_SUSPENSION',
+    description: `Lifted suspension for user ${suspension.userEmail} — Reason: ${reason || 'No reason provided'}`,
+    target: 'User',
+    targetId: suspension.userId,
+    ipAddress: req.ip || req.headers['x-forwarded-for'],
+  });
+
   res.status(200).json({
     success: true,
     message: 'Suspension lifted successfully',

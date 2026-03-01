@@ -6,6 +6,7 @@ const catchAsync = require('../utils/catchAsync');
 const { validateUserProfile } = require('../utils/joi/userValidation');
 const { validateAndFormatPhoneNumber } = require('../utils/helperFunctions');
 const Email = require('../utils/email');
+const createLog = require('../utils/createLog');
 
 const phoneUtil = PhoneNumberUtil.getInstance();
 const { roles } = require('../utils/types');
@@ -224,6 +225,17 @@ const UpdateUserByAdmin = catchAsync(async (req, res, next) => {
   await userFound.save();
   res.locals.dataId = userFound._id;
 
+  // Log admin edit
+  createLog({
+    actorId: req.user._id,
+    actorModel: 'admin',
+    action: 'UPDATE_USER',
+    description: `Admin updated profile for user: ${userFound.email}`,
+    target: 'User',
+    targetId: userFound._id,
+    ipAddress: req.ip || req.headers['x-forwarded-for'],
+  });
+
   return res.status(200).json({
     status: 'success',
     message: 'User updated successfully',
@@ -303,6 +315,18 @@ const CreateVendorByAdmin = catchAsync(async (req, res, next) => {
     });
     res.locals.dataId = user._id;
     user.save({ validateBeforeSave: false });
+
+    // Log vendor creation by admin
+    createLog({
+      actorId: req.user._id,
+      actorModel: 'admin',
+      action: 'CREATE_VENDOR',
+      description: `Admin created vendor account: ${user.email}`,
+      target: 'User',
+      targetId: user._id,
+      ipAddress: req.ip || req.headers['x-forwarded-for'],
+    });
+
     return res.status(200).json({
       status: 'success',
       message: 'Vendor created successfully',
@@ -1260,6 +1284,18 @@ const updatestaus = catchAsync(async (req, res, next) => {
     return next(new AppError('User not found', 404, { user: 'user not found' }));
   }
   res.locals.dataId = user._id;
+
+  // Log status change
+  createLog({
+    actorId: req.user._id,
+    actorModel: 'admin',
+    action: 'UPDATE_USER_STATUS',
+    description: `Admin changed status of ${user.email} to "${status}"`,
+    target: 'User',
+    targetId: user._id,
+    ipAddress: req.ip || req.headers['x-forwarded-for'],
+  });
+
   return res.status(202).json({
     status: 'success',
     user,
@@ -1277,6 +1313,17 @@ const deleteMe = catchAsync(async (req, res, next) => {
     return next(new AppError('User not found', 404, { user: 'user not found' }));
   }
   res.locals.dataId = user._id;
+
+  // Log account deletion
+  createLog({
+    actorId: req.user._id,
+    actorModel: req.user.role === 'vendor' ? 'vendor' : req.user.role === 'admin' ? 'admin' : 'customer',
+    action: 'DELETE_ACCOUNT',
+    description: `Account deleted (self): ${user.email}`,
+    target: 'User',
+    targetId: user._id,
+    ipAddress: req.ip || req.headers['x-forwarded-for'],
+  });
 
   return res.status(204).json({
     status: 'success',

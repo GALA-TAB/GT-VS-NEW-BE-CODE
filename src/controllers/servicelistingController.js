@@ -17,6 +17,7 @@ const {
 const Email = require('../utils/email');
 const User = require('../models/users/User');
 const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDeleteFilter');
+const createLog = require('../utils/createLog');
 
 const getDateRange = (filter) => {
   const now = moment.utc();
@@ -603,6 +604,18 @@ const createServiceListing = catchAsync(async (req, res, next) => {
     instantBookingCheck
   });
   res.locals.dataId = serviceListing._id;
+
+  // Log service creation
+  createLog({
+    actorId: req.user._id,
+    actorModel: req.user.role === 'admin' ? 'admin' : 'vendor',
+    action: 'CREATE_SERVICE',
+    description: `Created new service listing (ID: ${serviceListing._id})`,
+    target: 'ServiceListing',
+    targetId: serviceListing._id,
+    ipAddress: req.ip || req.headers['x-forwarded-for'],
+  });
+
   return res.status(200).json({
     status: 'success',
     data: serviceListing,
@@ -811,6 +824,18 @@ const deleteServiceListing = catchAsync(async (req, res, next) => {
     await deleteMedia(media?.key);
   });
   res.locals.dataId = serviceListing._id;
+
+  // Log service deletion
+  createLog({
+    actorId: req.user._id,
+    actorModel: req.user.role === 'admin' ? 'admin' : 'vendor',
+    action: 'DELETE_SERVICE',
+    description: `Deleted service listing (ID: ${serviceListing._id}) titled "${serviceListing.title || 'Untitled'}"`,
+    target: 'ServiceListing',
+    targetId: serviceListing._id,
+    ipAddress: req.ip || req.headers['x-forwarded-for'],
+  });
+
   return res.status(200).json({
     status: 'success',
     data: null,

@@ -5,6 +5,7 @@ const User = require('../models/users/User');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const { removeFields } = require('../utils/helpers');
+const createLog = require('../utils/createLog');
 const Email = require('../utils/email');
 
 const phoneUtil = PhoneNumberUtil.getInstance();
@@ -151,6 +152,15 @@ const registerUser = catchAsync(async (req, res, next) => {
   }
   res.locals.dataId = newUser._id;
   res.locals.actor = newUser;
+
+  // Activity log
+  createLog({
+    actorId: newUser._id,
+    actorModel: newUser.role === 'admin' ? 'admin' : newUser.role === 'vendor' ? 'vendor' : 'customer',
+    action: 'REGISTER',
+    description: `New ${newUser.role} account registered: ${newUser.email}`,
+    ipAddress: req.ip || req.headers['x-forwarded-for'],
+  });
 
   return res.status(200).json({
     status: 'success',
@@ -641,10 +651,18 @@ const loginUser = catchAsync(async (req, res, next) => {
   // Save the original Mongoose document (if needed)
   await user.save({ validateBeforeSave: false });
 
+  // Activity log — fire-and-forget, never blocks response
+  createLog({
+    actorId: user._id,
+    actorModel: user.role === 'admin' ? 'admin' : user.role === 'vendor' ? 'vendor' : 'customer',
+    action: 'LOGIN',
+    description: `Logged in successfully (${user.email})`,
+    ipAddress: req.ip || req.headers['x-forwarded-for'],
+  });
+
   // Generate token
   const token = signToken(userData);
 
-  // console.log('token', token);
   res.locals.dataId = user._id;
   res.locals.actor = user;
   return res.status(200).json({
