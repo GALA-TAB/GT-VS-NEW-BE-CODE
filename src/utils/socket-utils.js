@@ -226,24 +226,7 @@ module.exports = {
             }
           }
         },
-        {
-          $addFields: {
-            sortPriority: {
-              $ifNull: ['$lastMessageSentAt', new Date(0)]
-            }
-          }
-        },
-        { $sort: { sortPriority: -1 } },
-        { $skip: skipDocuments },
-        { $limit: documentsLimit },
-        {
-          $lookup: {
-            from: 'users',
-            localField: 'participants',
-            foreignField: '_id',
-            as: 'participants'
-          }
-        },
+        // Look up lastMessage FIRST so we can fall back to lastMessage.createdAt when sorting
         {
           $lookup: {
             from: 'messages',
@@ -256,6 +239,24 @@ module.exports = {
           $unwind: {
             path: '$lastMessage',
             preserveNullAndEmptyArrays: true
+          }
+        },
+        {
+          $addFields: {
+            sortPriority: {
+              $ifNull: ['$lastMessageSentAt', '$lastMessage.createdAt', new Date(0)]
+            }
+          }
+        },
+        { $sort: { sortPriority: -1 } },
+        { $skip: skipDocuments },
+        { $limit: documentsLimit },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'participants',
+            foreignField: '_id',
+            as: 'participants'
           }
         }
       ]);
@@ -464,8 +465,15 @@ module.exports = {
       console.log('userChatIds', userChatIds);
       let chats = await Chats.find({ _id: { $in: userChatIds } })
         .populate('participants')
-        .populate({ path: 'lastMessage', model: Messages })
-        .sort({ lastMessageSentAt: -1 });
+        .populate({ path: 'lastMessage', model: Messages });
+
+      // Sort by the effective last-message time, falling back to lastMessage.createdAt
+      // for older chats where lastMessageSentAt was never backfilled.
+      chats.sort((a, b) => {
+        const tA = a.lastMessageSentAt ?? a.lastMessage?.createdAt ?? new Date(0);
+        const tB = b.lastMessageSentAt ?? b.lastMessage?.createdAt ?? new Date(0);
+        return new Date(tB) - new Date(tA);
+      });
 
       console.log('these are chats for users', chats);
 
@@ -1239,12 +1247,20 @@ module.exports = {
       }).distinct('_id');
       console.log('user other chats ids', userChatIds);
       let chats = await Chats.find({ _id: { $in: userChatIds } })
-        .sort({ lastMessageSentAt: -1 })
         .populate('participants')
-        .populate({ path: 'lastMessage', model: Messages })
-        .skip(skipDocuments)
-        .limit(documentsLimit);
-      if (chats?.length) {
+        .populate({ path: 'lastMessage', model: Messages });
+
+      // Sort by effective last-message time, falling back to lastMessage.createdAt
+      // for older chats where lastMessageSentAt was never backfilled.
+      chats.sort((a, b) => {
+        const tA = a.lastMessageSentAt ?? a.lastMessage?.createdAt ?? new Date(0);
+        const tB = b.lastMessageSentAt ?? b.lastMessage?.createdAt ?? new Date(0);
+        return new Date(tB) - new Date(tA);
+      });
+
+      // Apply pagination after sorting
+      chats = chats.slice(skipDocuments, skipDocuments + documentsLimit);
+
         chats = await Promise.all(
           chats?.map(async (chat) => {
             const unreadCount = await Messages.countDocuments({
