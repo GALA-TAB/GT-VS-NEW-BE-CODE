@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
 const moment = require('moment');
 const { promisify } = require('util');
+const { connectDB } = require('../config/connectDb');
 const Messages = require('../models/chat/Message');
 const Chats = require('../models/chat/Chat');
 const Users = require('../models/users/User');
@@ -20,11 +21,17 @@ const Notification = require('../models/Notification');
 module.exports = {
   authMiddleWareSocket: async (socket, next) => {
     try {
-      const authorization = socket.handshake.auth.token;
-      if (!authorization) {
-        return next(new Error('You must be logged in'));
+      // Ensure MongoDB is connected before running any queries
+      if (mongoose.connection.readyState !== 1) {
+        try {
+          await connectDB();
+        } catch (dbErr) {
+          console.error('Socket auth: DB connection failed:', dbErr.message);
+          return next(new Error('Database unavailable. Please try again shortly.'));
+        }
       }
-      console.log('authorization', authorization);
+
+      const authorization = socket.handshake.auth.token;
       if (!authorization) {
         return next(new Error('You must be logged in'));
       }
@@ -34,10 +41,10 @@ module.exports = {
         return next(new Error('Invalid token.'));
       }
       const user = await User.findById(currentUser._id);
-      console.log(user.fullName); // Should log "First Last"
       if (!user) {
         return next(new Error('User not found.'));
       }
+      console.log(user.fullName);
       if (user?.role === 'admin') {
         const adminUser = await User.findOne({ adminRole: 'admin' });
         socket.user = adminUser;

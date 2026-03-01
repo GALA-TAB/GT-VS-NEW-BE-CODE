@@ -26,7 +26,7 @@ const connectDB = async () => {
     socketTimeoutMS: 45000,
     serverSelectionTimeoutMS: 30000,
     bufferCommands: true,
-    bufferTimeoutMS: 30000,   // must be >= serverSelectionTimeoutMS
+    bufferTimeoutMS: 8000,    // fail fast — socket auth catches this and retries
     maxPoolSize: 10,
     minPoolSize: 1,
     family: 4,                // force IPv4 — avoids IPv6 resolution issues on Render
