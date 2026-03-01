@@ -229,7 +229,7 @@ module.exports = {
         {
           $addFields: {
             sortPriority: {
-              $ifNull: ['$lastMessageSentAt']
+              $ifNull: ['$lastMessageSentAt', new Date(0)]
             }
           }
         },
@@ -1239,10 +1239,9 @@ module.exports = {
       }).distinct('_id');
       console.log('user other chats ids', userChatIds);
       let chats = await Chats.find({ _id: { $in: userChatIds } })
-        .sort({ updatedAt: -1 })
+        .sort({ lastMessageSentAt: -1 })
         .populate('participants')
         .populate({ path: 'lastMessage', model: Messages })
-        .sort({ lastMessageSentAt: -1 })
         .skip(skipDocuments)
         .limit(documentsLimit);
       if (chats?.length) {
