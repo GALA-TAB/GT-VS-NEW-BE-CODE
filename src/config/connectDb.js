@@ -11,6 +11,12 @@ const connectDB = async () => {
     throw new Error('MONGO_URI environment variable is not set');
   }
 
+  // Quick sanity-check so misconfigured env vars are caught immediately
+  if (!process.env.MONGO_URI.startsWith('mongodb://') && !process.env.MONGO_URI.startsWith('mongodb+srv://')) {
+    const preview = process.env.MONGO_URI.slice(0, 20).replace(/./g, (c, i) => i < 10 ? c : '*');
+    throw new Error(`MONGO_URI has invalid scheme (starts with: "${preview}…"). Expected mongodb:// or mongodb+srv://`);
+  }
+
   // Already connected — reuse
   if (cachedConnection && mongoose.connection.readyState === 1) {
     return cachedConnection;
