@@ -37,14 +37,21 @@ const updateVendorProfile = catchAsync(async (req, res, next) => {
 
   // Validate and normalize phone numbers if provided
   try {
-    if (contact) {
-      updateData.contact = validateAndFormatPhoneNumber(contact, countryCode);
+    if (contact !== undefined) {
+      updateData.contact = contact
+        ? validateAndFormatPhoneNumber(contact, countryCode)
+        : '';
+      if (countryCode !== undefined) updateData.countryCode = countryCode;
     }
-    if (officeContact) {
-      updateData.officeContact = validateAndFormatPhoneNumber(officeContact, countryCode);
+    if (officeContact !== undefined) {
+      updateData.officeContact = officeContact
+        ? validateAndFormatPhoneNumber(officeContact, countryCode)
+        : '';
     }
-    if (emergencyContact) {
-      updateData.emergencyContact = validateAndFormatPhoneNumber(emergencyContact, countryCode);
+    if (emergencyContact !== undefined) {
+      updateData.emergencyContact = emergencyContact
+        ? validateAndFormatPhoneNumber(emergencyContact, countryCode)
+        : '';
     }
   } catch (err) {
     return next(new AppError('Validation failed', 400, { contact: err.message }));
