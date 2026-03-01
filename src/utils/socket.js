@@ -448,6 +448,12 @@ function initializeSocket(server) {
         };
         const addMessage = await MessagesModel.create(messageBody);
 
+        // Update chat with lastMessage and lastMessageSentAt so inbox sort is always correct
+        await ChatsModel.findByIdAndUpdate(chatId, {
+          lastMessage: addMessage._id,
+          lastMessageSentAt: addMessage.createdAt
+        });
+
         const latestMessageData = addMessage;
 
         const messageEmitBody = {
