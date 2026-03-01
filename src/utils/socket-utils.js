@@ -1261,7 +1261,7 @@ module.exports = {
       // Apply pagination after sorting
       chats = chats.slice(skipDocuments, skipDocuments + documentsLimit);
 
-        chats = await Promise.all(
+      chats = await Promise.all(
           chats?.map(async (chat) => {
             const unreadCount = await Messages.countDocuments({
               chat: { $in: chat?._id },
@@ -1328,7 +1328,6 @@ module.exports = {
             return chatDisplayInfo;
           })
         );
-      }
       const response = {
         pageNo,
         recordsPerPage,
