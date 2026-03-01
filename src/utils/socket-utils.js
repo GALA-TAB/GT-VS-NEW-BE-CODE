@@ -21,13 +21,25 @@ const Notification = require('../models/Notification');
 module.exports = {
   authMiddleWareSocket: async (socket, next) => {
     try {
-      // Ensure MongoDB is connected before running any queries
+      // Wait for MongoDB to be ready (handles Render cold-start delays)
+      // Poll up to 10 times × 2s = 20s before giving up
       if (mongoose.connection.readyState !== 1) {
-        try {
-          await connectDB();
-        } catch (dbErr) {
-          console.error('Socket auth: DB connection failed:', dbErr.message);
-          return next(new Error('Database unavailable. Please try again shortly.'));
+        const MAX_ATTEMPTS = 10;
+        const RETRY_DELAY_MS = 2000;
+        let connected = false;
+        for (let i = 0; i < MAX_ATTEMPTS; i++) {
+          try {
+            await connectDB();
+            if (mongoose.connection.readyState === 1) {
+              connected = true;
+              break;
+            }
+          } catch (_) { /* will retry */ }
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        }
+        if (!connected) {
+          console.error('Socket auth: DB not ready after retries');
+          return next(new Error('Server is starting up. Please try again in a moment.'));
         }
       }
 
