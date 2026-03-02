@@ -295,11 +295,234 @@ const getsinglecompletedbooking = catchAsync(async (req, res, next) => {
     });
 });
 
+// ═════════════════════════════════════════════════════════════════════════════
+// ESCROW & DISPUTE ENDPOINTS
+// ═════════════════════════════════════════════════════════════════════════════
 
+// GET /api/payment/escrow/:bookingId
+// Returns the escrow + dispute status for a booking.
+const getEscrowStatus = catchAsync(async (req, res, next) => {
+  const { bookingId } = req.params;
+
+  const booking = await Bookings.findById(bookingId);
+  if (!booking) return next(new AppError('Booking not found', 404));
+
+  const payment = await Payments.findOne({ booking: bookingId });
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      bookingId,
+      bookingStatus: booking.status,
+      escrowReleaseAt: booking.escrowReleaseAt,
+      inDispute: booking.inDispute,
+      disputeReason: booking.disputeReason,
+      disputeFiledAt: booking.disputeFiledAt,
+      disputeResolvedAt: booking.disputeResolvedAt,
+      disputeResolution: booking.disputeResolution,
+      payment: payment
+        ? {
+            escrowStatus: payment.escrowStatus,
+            amount: payment.amount,
+            systemFee: payment.systemFee,
+            stripeTransferId: payment.stripeTransferId,
+            stripeRefundId: payment.stripeRefundId
+          }
+        : null
+    }
+  });
+});
+
+// POST /api/payment/dispute/:bookingId
+// Customer files a dispute within 72 hours of checkout.
+// Body: { reason: string }
+const fileDispute = catchAsync(async (req, res, next) => {
+  const { bookingId } = req.params;
+  const { reason } = req.body;
+
+  if (!reason || reason.trim().length === 0) {
+    return next(new AppError('Dispute reason is required.', 400));
+  }
+
+  const booking = await Bookings.findById(bookingId);
+  if (!booking) return next(new AppError('Booking not found', 404));
+
+  // Only the customer who made the booking can file a dispute
+  if (booking.user.toString() !== req.user._id.toString()) {
+    return next(new AppError('You are not authorised to dispute this booking.', 403));
+  }
+
+  if (booking.status !== 'completed') {
+    return next(new AppError('Disputes can only be filed for completed bookings.', 400));
+  }
+
+  if (booking.inDispute) {
+    return next(new AppError('A dispute has already been filed for this booking.', 400));
+  }
+
+  // Enforce 72-hour dispute window
+  if (booking.escrowReleaseAt && new Date() > booking.escrowReleaseAt) {
+    return next(new AppError('The 72-hour dispute window for this booking has closed.', 400));
+  }
+
+  booking.inDispute = true;
+  booking.disputeReason = reason.trim();
+  booking.disputeFiledAt = new Date();
+  await booking.save();
+
+  const payment = await Payments.findOne({ booking: bookingId });
+  if (payment) {
+    payment.escrowStatus = 'disputed';
+    await payment.save();
+  }
+
+  // Notify admin
+  const admins = await User.find({ role: 'admin' });
+  for (const admin of admins) {
+    await new Email(admin).sendDisputeAlert({
+      bookingId,
+      reason: reason.trim(),
+      userId: req.user._id,
+      amount: payment?.amount
+    }).catch(() => {}); // non-blocking
+  }
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Dispute filed successfully. Our team will review it within 1-2 business days.'
+  });
+});
+
+// POST /api/payment/dispute/:bookingId/resolve   (admin only)
+// Admin resolves a dispute.
+// Body: { resolution: 'refunded' | 'partial_refund' | 'released', refundAmount?: number }
+const resolveDispute = catchAsync(async (req, res, next) => {
+  const { bookingId } = req.params;
+  const { resolution, refundAmount } = req.body;
+
+  const allowedResolutions = ['refunded', 'partial_refund', 'released'];
+  if (!allowedResolutions.includes(resolution)) {
+    return next(new AppError('resolution must be refunded, partial_refund, or released', 400));
+  }
+
+  const booking = await Bookings.findById(bookingId).populate({
+    path: 'service',
+    select: 'vendorId',
+    populate: { path: 'vendorId', model: 'User' }
+  });
+  if (!booking) return next(new AppError('Booking not found', 404));
+  if (!booking.inDispute) return next(new AppError('This booking is not in dispute.', 400));
+
+  const payment = await Payments.findOne({ booking: bookingId });
+  if (!payment) return next(new AppError('No payment record found for this booking.', 404));
+
+  const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
+  if (resolution === 'released') {
+    // Release funds to vendor anyway
+    const vendor = booking.service.vendorId;
+    if (vendor?.stripeAccountId) {
+      const account = await receiveAccount(vendor.stripeAccountId);
+      if (account?.charges_enabled || account?.payouts_enabled) {
+        const amountInCents = Math.round(payment.amount * 100);
+        const transfer = await maintoConnect({ vendor, amountInCents });
+        if (transfer) {
+          payment.stripeTransferId = transfer.id;
+        }
+      }
+    }
+    payment.escrowStatus = 'released';
+    payment.status = 'completed';
+    booking.paymentStatus = true;
+  } else {
+    // Refund to customer (full or partial)
+    const chargeId = payment.stripeChargeId;
+    if (chargeId) {
+      const refundParams = { charge: chargeId };
+      if (resolution === 'partial_refund' && refundAmount) {
+        refundParams.amount = Math.round(Number(refundAmount) * 100);
+      }
+      try {
+        const refund = await stripe.refunds.create(refundParams);
+        payment.stripeRefundId = refund.id;
+      } catch (stripeErr) {
+        console.error('[resolveDispute] Stripe refund error:', stripeErr);
+        return next(new AppError('Stripe refund failed: ' + stripeErr.message, 500));
+      }
+    }
+    payment.escrowStatus = resolution === 'partial_refund' ? 'partial_refund' : 'refunded';
+    payment.status = 'completed';
+  }
+
+  booking.inDispute = false;
+  booking.disputeResolvedAt = new Date();
+  booking.disputeResolution = resolution;
+  await booking.save();
+  await payment.save();
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Dispute resolved successfully.',
+    data: { resolution, bookingId }
+  });
+});
+
+// POST /api/payment/escrow/:bookingId/release   (admin only)
+// Admin manually releases escrow early (e.g. for trust vendors).
+const adminReleaseEscrow = catchAsync(async (req, res, next) => {
+  const { bookingId } = req.params;
+
+  const booking = await Bookings.findById(bookingId).populate({
+    path: 'service',
+    select: 'vendorId',
+    populate: { path: 'vendorId', model: 'User' }
+  });
+  if (!booking) return next(new AppError('Booking not found', 404));
+  if (booking.inDispute) return next(new AppError('Cannot release escrow while booking is in dispute.', 400));
+
+  const payment = await Payments.findOne({ booking: bookingId });
+  if (!payment) return next(new AppError('No payment record found.', 404));
+  if (payment.escrowStatus !== 'held') {
+    return next(new AppError('Escrow is not currently held for this booking.', 400));
+  }
+
+  const vendor = booking.service.vendorId;
+  if (!vendor?.stripeAccountId) {
+    return next(new AppError('Vendor does not have a connected Stripe account.', 400));
+  }
+
+  const account = await receiveAccount(vendor.stripeAccountId);
+  if (!account?.charges_enabled && !account?.payouts_enabled) {
+    return next(new AppError('Vendor Stripe account is not enabled for transfers.', 400));
+  }
+
+  const amountInCents = Math.round(payment.amount * 100);
+  const transfer = await maintoConnect({ vendor, amountInCents });
+
+  if (!transfer) return next(new AppError('Stripe transfer failed.', 500));
+
+  payment.escrowStatus = 'released';
+  payment.stripeTransferId = transfer.id;
+  payment.status = 'completed';
+  await payment.save();
+
+  booking.paymentStatus = true;
+  await booking.save();
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Escrow released to vendor.',
+    data: { bookingId, transferId: transfer.id, amount: payment.amount }
+  });
+});
 
 module.exports = {
     getAllpaymentsforVendor,
     getAllPayments,
     vendorPayout,
-    getsinglecompletedbooking
+    getsinglecompletedbooking,
+    getEscrowStatus,
+    fileDispute,
+    resolveDispute,
+    adminReleaseEscrow
 };

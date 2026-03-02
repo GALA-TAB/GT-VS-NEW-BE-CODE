@@ -1,113 +1,124 @@
 const cron = require('node-cron');
 const moment = require('moment');
 const Booking = require('../models/Bookings');
-const AppError = require('../utils/appError');
 const sendNotification = require('./storeNotification');
 const Pricing = require('../models/Pricing');
-const { maintoConnect } = require('./stripe-utils/stripe-transfer.util');
-const { receiveAccount } = require('./stripe-utils/connect-accounts.util');
 const Payments = require('../models/Payment');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Booking Completion Cron  (runs every minute)
+//
+// When a booking's checkOut has passed and status is still 'booked':
+//   1. Mark booking as 'completed'
+//   2. Create/update a Payment record with escrowStatus = 'held'
+//   3. Set escrowReleaseAt = checkOut + 72 hours  (Airbnb-style dispute window)
+//   4. Notify vendor + customer
+//
+// The actual Stripe transfer is handled by PayoutCrone.js after the 72-hour
+// dispute window closes — NOT here.
+// ─────────────────────────────────────────────────────────────────────────────
+const ESCROW_HOLD_HOURS = 72;
 
 cron.schedule('* * * * *', async () => {
   try {
     const now = moment().utc().toDate();
-    console.log('Current time:', now);
 
-    const bookings = await Booking.find({ checkOut: { $lte: now }, status: 'booked' }).populate({
+    const bookings = await Booking.find({
+      checkOut: { $lte: now },
+      status: 'booked',
+      isDeleted: false
+    }).populate({
       path: 'service',
       select: 'vendorId title',
-      populate: {
-        path: 'vendorId',
-        model: 'User' // Assuming the vendor is a User model
-      }
+      populate: { path: 'vendorId', model: 'User' }
     });
 
-    console.log(`Found ${bookings.length} bookings to update`);
+    if (bookings.length > 0) {
+      console.log('[updateRequest] Found ' + bookings.length + ' booking(s) to complete.');
+    }
 
     for (const booking of bookings) {
-      // Update booking status
-      booking.status = 'completed';
+      try {
+        // ── 1. Calculate payout (after platform fee) ───────────────────────
+        let amountAfterFee = booking.totalPrice;
+        let platformFee = 0;
 
-      // Notify vendor about booking completion and payout
-      sendNotification({
-        userId: booking?.service?.vendorId?._id,
-        title: 'Booking Completed',
-        message: `Your booking #${booking?._id} ("${booking?.service?.title}") has been completed.`,
-        type: 'booking',
-        fortype: 'booking',
-        permission: 'bookings',
-        linkUrl: `/vendor-dashboard/complete-Bookings`
-      });
-
-      sendNotification({
-        userId: booking?.user,
-        title: 'Booking Completed',
-        message: `Your booking #${booking?._id} ("${booking?.service?.title}") has been marked as completed. Thank you for using our service!`,
-        type: 'booking',
-        fortype: 'booking',
-        permission: 'bookings',
-        linkUrl: `/user-dashboard/user-booking?tab=2`
-      });
-
-      let amountafterfee = booking.totalPrice;
-      let amountInCents = 0;
-      if (booking.service.vendorId.customPricingPercentage) {
-        const fee = (booking.totalPrice * booking.service.vendorId.customPricingPercentage) / 100;
-        amountafterfee = booking.totalPrice - fee;
-      } else {
-        const pricing = await Pricing.findOne({});
-        if (pricing) {
-          const fee = (booking.totalPrice * pricing.pricingPercentage) / 100;
-          amountafterfee = booking.totalPrice - fee;
+        if (booking.service.vendorId.customPricingPercentage) {
+          platformFee = (booking.totalPrice * booking.service.vendorId.customPricingPercentage) / 100;
         } else {
-          console.log('No pricing found, using total price as amount after fee');
-        }
-      }
-      amountInCents = Math.round(amountafterfee * 100);
-      let status = 'pending';
-      // console.log("Vendor Stripe Account ID:", booking?.service?.vendorId);
-      if (booking?.service?.vendorId?.stripeAccountId) {
-        const account = await receiveAccount(booking?.service?.vendorId?.stripeAccountId);
-        // console.log('Account:', account);
-        if (account?.charges_enabled || account?.payouts_enabled) {
-          const transfer = await maintoConnect({
-            vendor: booking.service.vendorId,
-            amountInCents: amountInCents
-          });
-          // console.log('Transfer response:', booking?.service);
-          if (transfer) {
-            booking.paymentStatus = true;
-            booking.save();
-            status = 'completed';
-            sendNotification({
-              userId: booking?.service?.vendorId?._id,
-              title: 'Payout Confirmed',
-              message: `Your payout of $${booking?.totalPrice} for booking #${booking?._id} ("${booking?.service?.title}") has been successfully processed.`,
-              type: 'payout',
-              fortype: 'payout',
-              permission: 'bookings',
-              linkUrl: `/vendor-dashboard/PayOut-Details`
-            });
+          const pricing = await Pricing.findOne({});
+          if (pricing) {
+            platformFee = (booking.totalPrice * pricing.pricingPercentage) / 100;
           }
         }
-      }
-      const findExistingPayment = await Payments.findOne({ booking: booking._id.toString() });
-      if (findExistingPayment) {
-        findExistingPayment.status = status;
-        await findExistingPayment.save();
-      } else {
-        await Payments.create({
-          booking: booking._id.toString(),
-          vendorId: booking.service.vendorId._id.toString(),
-          amount: amountafterfee,
-          status: status
+        amountAfterFee = booking.totalPrice - platformFee;
+
+        // ── 2. Escrow release timestamp (checkOut + 72h) ───────────────────
+        const escrowReleaseAt = moment(booking.checkOut)
+          .add(ESCROW_HOLD_HOURS, 'hours')
+          .toDate();
+
+        // ── 3. Mark booking completed + store escrow timestamp ─────────────
+        booking.status = 'completed';
+        booking.escrowReleaseAt = escrowReleaseAt;
+        await booking.save();
+
+        // ── 4. Create or update escrow Payment record ──────────────────────
+        const existingPayment = await Payments.findOne({ booking: booking._id.toString() });
+        if (existingPayment) {
+          existingPayment.escrowStatus = 'held';
+          existingPayment.escrowReleaseAt = escrowReleaseAt;
+          existingPayment.amount = amountAfterFee;
+          existingPayment.systemFee = platformFee;
+          await existingPayment.save();
+        } else {
+          await Payments.create({
+            booking: booking._id.toString(),
+            vendorId: booking.service.vendorId._id.toString(),
+            amount: amountAfterFee,
+            systemFee: platformFee,
+            escrowStatus: 'held',
+            escrowReleaseAt,
+            status: 'pending'
+          });
+        }
+
+        const releaseDate = moment(escrowReleaseAt).format('MMMM Do YYYY, h:mm a [UTC]');
+
+        // ── 5. Notify vendor ───────────────────────────────────────────────
+        sendNotification({
+          userId: booking.service.vendorId._id,
+          title: 'Booking Completed - Payout Pending',
+          message:
+            'Booking #' + booking._id + ' ("' + booking.service.title + '") is complete. ' +
+            'Your payout of $' + Number(amountAfterFee).toFixed(2) +
+            ' is held in escrow and will be released on ' + releaseDate +
+            ' if no dispute is filed.',
+          type: 'payout',
+          fortype: 'payout',
+          permission: 'bookings',
+          linkUrl: '/vendor-dashboard/PayOut-Details'
         });
+
+        // ── 6. Notify customer of 72-hour dispute window ───────────────────
+        sendNotification({
+          userId: booking.user,
+          title: 'Booking Completed - 72-Hour Dispute Window Open',
+          message:
+            'Your booking #' + booking._id + ' ("' + booking.service.title + '") is complete. ' +
+            'You have 72 hours (until ' + releaseDate + ') to file a dispute before funds are released to the vendor.',
+          type: 'booking',
+          fortype: 'booking',
+          permission: 'bookings',
+          linkUrl: '/user-dashboard/user-booking?tab=2'
+        });
+
+        console.log('[updateRequest] Booking ' + booking._id + ' completed. Escrow held until ' + escrowReleaseAt);
+      } catch (bookingErr) {
+        console.error('[updateRequest] Error processing booking ' + booking._id + ':', bookingErr);
       }
-      booking.paymentStatus = true;
-      booking.save();
-      console.log(`Booking ${booking._id} status updated and payout history created.`);
     }
   } catch (err) {
-    console.error('Error updating booking statuses and creating payout history:', err);
+    console.error('[updateRequest] Fatal cron error:', err);
   }
 });

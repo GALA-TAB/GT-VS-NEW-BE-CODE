@@ -60,6 +60,36 @@ const BookingSchema = new Schema(
       type: String,
       trim: true
     },
+    // ── Escrow / Dispute Fields ────────────────────────────────────
+    // Timestamp when the 72-hour dispute window closes (set when booking completes)
+    escrowReleaseAt: {
+      type: Date,
+      default: null
+    },
+    // Whether an active dispute has been filed by the customer
+    inDispute: {
+      type: Boolean,
+      default: false
+    },
+    disputeReason: {
+      type: String,
+      trim: true,
+      default: null
+    },
+    disputeFiledAt: {
+      type: Date,
+      default: null
+    },
+    disputeResolvedAt: {
+      type: Date,
+      default: null
+    },
+    // 'refunded' | 'partial_refund' | 'released' – set when admin resolves
+    disputeResolution: {
+      type: String,
+      enum: ['refunded', 'partial_refund', 'released', null],
+      default: null
+    },
     servicePrice: [
       {
         name: {

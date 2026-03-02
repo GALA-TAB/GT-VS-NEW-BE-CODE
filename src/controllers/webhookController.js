@@ -1,5 +1,9 @@
 const stripe = require('../config/stripe');
 const Vendor = require('../models/users/Vendor');
+const Booking = require('../models/Bookings');
+const Payments = require('../models/Payment');
+const User = require('../models/users/User');
+const sendNotification = require('../utils/storeNotification');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
@@ -62,6 +66,106 @@ exports.stripeWebhook = catchAsync(async (req, res, next) => {
     case "account.application.deauthorized": {
       const account = event.data.object;
       console.log(`🚫 Application deauthorized for connected account: ${account.id}`);
+      break;
+    }
+
+    // ── Stripe-initiated dispute (chargeback) ──────────────────────────────
+    case "charge.dispute.created": {
+      const dispute = event.data.object;
+      const chargeId = dispute.charge;
+
+      const payment = await Payments.findOne({ stripeChargeId: chargeId });
+      if (payment) {
+        payment.escrowStatus = 'disputed';
+        await payment.save();
+
+        const booking = await Booking.findById(payment.booking);
+        if (booking) {
+          booking.inDispute = true;
+          booking.disputeReason = 'Stripe chargeback: ' + (dispute.reason || 'unspecified');
+          booking.disputeFiledAt = new Date();
+          await booking.save();
+        }
+
+        // Alert admins
+        const admins = await User.find({ role: 'admin' });
+        for (const admin of admins) {
+          sendNotification({
+            userId: admin._id,
+            title: 'Stripe Chargeback Filed',
+            message: 'A Stripe chargeback has been filed for booking #' + payment.booking + '. Reason: ' + (dispute.reason || 'unspecified') + '. Escrow held pending review.',
+            type: 'dispute',
+            fortype: 'dispute',
+            permission: 'bookings',
+            linkUrl: '/admin-dashboard/disputes'
+          });
+        }
+        console.log('[webhook] charge.dispute.created — escrow held for charge', chargeId);
+      }
+      break;
+    }
+
+    case "charge.dispute.closed": {
+      const dispute = event.data.object;
+      const chargeId = dispute.charge;
+
+      const payment = await Payments.findOne({ stripeChargeId: chargeId });
+      if (payment) {
+        const booking = await Booking.findById(payment.booking).populate({
+          path: 'service',
+          select: 'vendorId',
+          populate: { path: 'vendorId', model: 'User' }
+        });
+
+        if (dispute.status === 'lost') {
+          // Customer won — funds already refunded by Stripe
+          payment.escrowStatus = 'refunded';
+          payment.status = 'completed';
+          if (booking) {
+            booking.inDispute = false;
+            booking.disputeResolvedAt = new Date();
+            booking.disputeResolution = 'refunded';
+            await booking.save();
+          }
+        } else {
+          // Merchant won — release to vendor
+          payment.escrowStatus = 'released';
+          payment.status = 'completed';
+          if (booking) {
+            booking.inDispute = false;
+            booking.disputeResolvedAt = new Date();
+            booking.disputeResolution = 'released';
+            booking.paymentStatus = true;
+            await booking.save();
+          }
+          sendNotification({
+            userId: booking?.service?.vendorId?._id,
+            title: 'Dispute Resolved – Payout Released',
+            message: 'The chargeback dispute for booking #' + payment.booking + ' was resolved in your favour. Funds have been released.',
+            type: 'payout',
+            fortype: 'payout',
+            permission: 'bookings',
+            linkUrl: '/vendor-dashboard/PayOut-Details'
+          });
+        }
+        await payment.save();
+        console.log('[webhook] charge.dispute.closed — status:', dispute.status, '— charge:', chargeId);
+      }
+      break;
+    }
+
+    // ── Store chargeId when a payment intent succeeds ──────────────────────
+    case "payment_intent.succeeded": {
+      const pi = event.data.object;
+      const latestCharge = pi.latest_charge;
+      if (latestCharge && pi.metadata?.bookingId) {
+        const payment = await Payments.findOne({ booking: pi.metadata.bookingId });
+        if (payment && !payment.stripeChargeId) {
+          payment.stripeChargeId = latestCharge;
+          await payment.save();
+          console.log('[webhook] payment_intent.succeeded — stored chargeId', latestCharge, 'for booking', pi.metadata.bookingId);
+        }
+      }
       break;
     }
 
