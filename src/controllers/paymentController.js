@@ -562,7 +562,7 @@ const adminReleaseEscrow = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     status: 'success',
-    message: 'Delayed payout released to vendor.',,
+    message: 'Delayed payout released to vendor.',
     data: { bookingId, transferId: transfer.id, amount: payment.amount }
   });
 });
