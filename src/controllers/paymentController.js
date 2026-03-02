@@ -50,6 +50,7 @@ const getAllPayments = catchAsync(async (req, res, next) => {
     const skip = (page - 1) * limit;
 
     const pipeline = [
+        // ── 1. Vendor lookup ────────────────────────────────────────────
         {
             $lookup: {
                 from: 'users',
@@ -58,7 +59,7 @@ const getAllPayments = catchAsync(async (req, res, next) => {
                 as: 'vendor'
             }
         },
-        { $unwind: { path: '$vendor' } },
+        { $unwind: { path: '$vendor', preserveNullAndEmptyArrays: true } },
         {
             $addFields: {
                 'vendor.fullName': {
@@ -75,54 +76,104 @@ const getAllPayments = catchAsync(async (req, res, next) => {
                 'vendor.role': { $ne: 'admin' }
             }
         },
+        // ── 2. Booking lookup (booking field stored as string → convert to ObjectId) ──
+        {
+            $addFields: {
+                bookingObjId: {
+                    $cond: {
+                        if: { $eq: [{ $type: '$booking' }, 'string'] },
+                        then: { $toObjectId: '$booking' },
+                        else: '$booking'
+                    }
+                }
+            }
+        },
         {
             $lookup: {
                 from: 'bookings',
-                localField: 'booking',
+                localField: 'bookingObjId',
                 foreignField: '_id',
-                as: 'booking'
+                as: 'bookingDoc'
             }
         },
-        { $unwind: { path: '$booking', preserveNullAndEmptyArrays: true } },
+        { $unwind: { path: '$bookingDoc', preserveNullAndEmptyArrays: true } },
+        // ── 3. Customer lookup ──────────────────────────────────────────
+        {
+            $lookup: {
+                from: 'users',
+                localField: 'bookingDoc.user',
+                foreignField: '_id',
+                as: 'customerDoc'
+            }
+        },
+        { $unwind: { path: '$customerDoc', preserveNullAndEmptyArrays: true } },
+        // ── 4. Service lookup ───────────────────────────────────────────
         {
             $lookup: {
                 from: 'servicelistings',
-                localField: 'booking.service',
+                localField: 'bookingDoc.service',
                 foreignField: '_id',
-                as: 'service'
+                as: 'serviceDoc'
             }
         },
-        { $unwind: { path: '$service', preserveNullAndEmptyArrays: true } },
-
+        { $unwind: { path: '$serviceDoc', preserveNullAndEmptyArrays: true } },
+        // ── 5. Merge lookups into clean shape ───────────────────────────
+        {
+            $addFields: {
+                'bookingDoc.user': {
+                    _id: '$customerDoc._id',
+                    firstName: '$customerDoc.firstName',
+                    lastName: '$customerDoc.lastName',
+                    name: { $concat: [{ $ifNull: ['$customerDoc.firstName', ''] }, ' ', { $ifNull: ['$customerDoc.lastName', ''] }] },
+                    email: '$customerDoc.email',
+                    profileImg: '$customerDoc.profileImg'
+                },
+                'bookingDoc.service': {
+                    _id: '$serviceDoc._id',
+                    title: '$serviceDoc.title'
+                }
+            }
+        },
+        {
+            $project: {
+                bookingObjId: 0,
+                customerDoc: 0,
+                serviceDoc: 0
+            }
+        }
     ];
-    // Add search filter if provided
+
+    // ── Search filter ────────────────────────────────────────────────────
     if (req.query.search) {
         const searchRegex = new RegExp(req.query.search, 'i');
         pipeline.push({
             $match: {
                 $or: [
                     { 'vendor.fullName': searchRegex },
-                    { 'service.title': searchRegex }
+                    { 'vendor.email': searchRegex },
+                    { 'bookingDoc.service.title': searchRegex },
+                    { 'bookingDoc.user.name': searchRegex },
+                    { 'bookingDoc.user.email': searchRegex }
                 ]
             }
         });
     }
 
-    // Add status filter if provided
-    if (req.query.status) {
-        pipeline.push({
-            $match: { status: req.query.status }
-        });
+    // ── escrowStatus filter (new) ────────────────────────────────────────
+    if (req.query.escrowStatus) {
+        pipeline.push({ $match: { escrowStatus: req.query.escrowStatus } });
     }
 
-    // Get total count
-    const totalResult = await Payments.aggregate([
-        ...pipeline,
-        { $count: 'total' }
-    ]);
+    // ── Legacy status filter ─────────────────────────────────────────────
+    if (req.query.status) {
+        pipeline.push({ $match: { status: req.query.status } });
+    }
+
+    // ── Total count ──────────────────────────────────────────────────────
+    const totalResult = await Payments.aggregate([...pipeline, { $count: 'total' }]);
     const total = totalResult[0]?.total || 0;
 
-    // Get paginated results
+    // ── Paginated results ────────────────────────────────────────────────
     const payments = await Payments.aggregate([
         ...pipeline,
         { $sort: { createdAt: -1 } },
