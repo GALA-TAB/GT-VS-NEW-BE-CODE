@@ -385,7 +385,7 @@ const getEscrowStatus = catchAsync(async (req, res, next) => {
 });
 
 // POST /api/payment/dispute/:bookingId
-// Customer files a dispute within 72 hours of checkout.
+// Customer files a dispute within 72 hours of the booking date (checkIn).
 // Body: { reason: string }
 const fileDispute = catchAsync(async (req, res, next) => {
   const { bookingId } = req.params;
@@ -411,9 +411,9 @@ const fileDispute = catchAsync(async (req, res, next) => {
     return next(new AppError('A dispute has already been filed for this booking.', 400));
   }
 
-  // Enforce 72-hour dispute window
+  // Enforce 72-hour dispute window (window opens at checkIn / booking date)
   if (booking.escrowReleaseAt && new Date() > booking.escrowReleaseAt) {
-    return next(new AppError('The 72-hour dispute window for this booking has closed.', 400));
+    return next(new AppError('The 72-hour dispute window for this booking has closed. Disputes must be filed within 72 hours of the booking date.', 400));
   }
 
   booking.inDispute = true;

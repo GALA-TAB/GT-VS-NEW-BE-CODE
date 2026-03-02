@@ -11,7 +11,7 @@ const Payments = require('../models/Payment');
 // When a booking's checkOut has passed and status is still 'booked':
 //   1. Mark booking as 'completed'
 //   2. Create/update a Payment record with escrowStatus = 'held'
-//   3. Set escrowReleaseAt = checkOut + 72 hours  (Airbnb-style dispute window)
+//   3. Set escrowReleaseAt = checkIn + 72 hours  (Airbnb-style: 72h from booking date)
 //   4. Notify vendor + customer
 //
 // The actual Stripe transfer is handled by PayoutCrone.js after the 72-hour
@@ -53,8 +53,9 @@ cron.schedule('* * * * *', async () => {
         }
         amountAfterFee = booking.totalPrice - platformFee;
 
-        // ── 2. Escrow release timestamp (checkOut + 72h) ───────────────────
-        const escrowReleaseAt = moment(booking.checkOut)
+        // ── 2. Escrow release timestamp (checkIn + 72h, Airbnb-style: window starts
+        //          from the booking date, not checkout date) ─────────────────
+        const escrowReleaseAt = moment(booking.checkIn)
           .add(ESCROW_HOLD_HOURS, 'hours')
           .toDate();
 
