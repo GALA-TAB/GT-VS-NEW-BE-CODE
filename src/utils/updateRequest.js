@@ -93,7 +93,7 @@ cron.schedule('* * * * *', async () => {
           message:
             'Booking #' + booking._id + ' ("' + booking.service.title + '") is complete. ' +
             'Your payout of $' + Number(amountAfterFee).toFixed(2) +
-            ' is held in escrow and will be released on ' + releaseDate +
+            ' is held as a delayed payout and will be released on ' + releaseDate +
             ' if no dispute is filed.',
           type: 'payout',
           fortype: 'payout',

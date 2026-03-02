@@ -93,7 +93,7 @@ exports.stripeWebhook = catchAsync(async (req, res, next) => {
           sendNotification({
             userId: admin._id,
             title: 'Stripe Chargeback Filed',
-            message: 'A Stripe chargeback has been filed for booking #' + payment.booking + '. Reason: ' + (dispute.reason || 'unspecified') + '. Escrow held pending review.',
+            message: 'A Stripe chargeback has been filed for booking #' + payment.booking + '. Reason: ' + (dispute.reason || 'unspecified') + '. Delayed payout held pending review.',
             type: 'dispute',
             fortype: 'dispute',
             permission: 'bookings',

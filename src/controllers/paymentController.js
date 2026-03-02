@@ -529,12 +529,12 @@ const adminReleaseEscrow = catchAsync(async (req, res, next) => {
     populate: { path: 'vendorId', model: 'User' }
   });
   if (!booking) return next(new AppError('Booking not found', 404));
-  if (booking.inDispute) return next(new AppError('Cannot release escrow while booking is in dispute.', 400));
+  if (booking.inDispute) return next(new AppError('Cannot release delayed payout while booking is in dispute.', 400));
 
   const payment = await Payments.findOne({ booking: bookingId });
   if (!payment) return next(new AppError('No payment record found.', 404));
   if (payment.escrowStatus !== 'held') {
-    return next(new AppError('Escrow is not currently held for this booking.', 400));
+    return next(new AppError('Delayed payout is not currently held for this booking.', 400));
   }
 
   const vendor = booking.service.vendorId;
@@ -562,7 +562,7 @@ const adminReleaseEscrow = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     status: 'success',
-    message: 'Escrow released to vendor.',
+    message: 'Delayed payout released to vendor.',,
     data: { bookingId, transferId: transfer.id, amount: payment.amount }
   });
 });
