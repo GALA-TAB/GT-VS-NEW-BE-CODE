@@ -128,9 +128,6 @@ module.exports = {
       pipeline.push({ $sort: { createdAt: -1 } });
 
       const notifications = await Notification.aggregate(pipeline);
-      if (notifications.length === 0) {
-        throw new Error('No unread notifications found.');
-      }
       return notifications;
     } catch (error) {
       console.error('JWT decoding error:', error.message);
