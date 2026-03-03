@@ -38,3 +38,4 @@ exports.eventTypeRoute = require('./eventTypeRoute');
 exports.clientReviewRoute = require('./clientReviewRoute');
 exports.alertRoute = require('./alertRoute');
 exports.suspensionRoute = require('./suspensionRoute');
+exports.chatViolationRoute = require('./chatViolationRoute');
