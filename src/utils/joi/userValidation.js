@@ -61,6 +61,8 @@ const registerUserSchema = Joi.object({
 
   state: Joi.string().optional().allow(''),
 
+  companyName: Joi.string().optional().allow(''),
+
   country: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required().messages({
     'any.required': 'country is required.'
   }),
