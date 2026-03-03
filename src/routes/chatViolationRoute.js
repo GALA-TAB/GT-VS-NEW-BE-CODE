@@ -7,6 +7,8 @@ const {
   updateViolation,
   deleteViolation,
   getViolationStats,
+  setChatRestriction,
+  getMyChatStatus,
 } = require('../controllers/chatViolationController');
 
 const router = express.Router();
@@ -14,12 +16,14 @@ const router = express.Router();
 // All routes require authentication
 router.use(requireAuth);
 
-// Any authenticated user can report a violation (the blocked sender)
+// Any authenticated user
 router.post('/', reportViolation);
+router.get('/my-status', getMyChatStatus);
 
 // Admin-only routes
 router.get('/stats', restrictTo(['admin']), getViolationStats);
 router.get('/', restrictTo(['admin']), getViolations);
+router.patch('/restrict/:userId', restrictTo(['admin']), setChatRestriction);
 router.patch('/:id', restrictTo(['admin']), updateViolation);
 router.delete('/:id', restrictTo(['admin']), deleteViolation);
 

@@ -256,7 +256,17 @@ const userSchema = new Schema(
       type: Boolean,
       default: false
     },
-    lastSeen: Date
+    lastSeen: Date,
+    // Chat protection — set by admin via Chat Protection dashboard
+    chatRestriction: {
+      type: String,
+      enum: ['active', 'cooldown', 'restricted'],
+      default: 'active',
+    },
+    chatCooldownUntil: {
+      type: Date,
+      default: null,
+    },
   },
   {
     discriminatorKey: 'role',

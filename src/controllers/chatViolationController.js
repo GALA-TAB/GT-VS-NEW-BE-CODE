@@ -1,6 +1,7 @@
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const ChatViolation = require('../models/ChatViolation');
+const User = require('../models/users/User');
 
 /* ── Label → detectionType mapper (mirrors the frontend VIOLATION_RULES labels) ── */
 const LABEL_TO_TYPE = {
@@ -123,4 +124,72 @@ exports.getViolationStats = catchAsync(async (req, res, next) => {
   ]);
 
   res.status(200).json({ status: 'success', data: { total, byType, byStatus } });
+});
+
+/**
+ * PATCH /api/chat-violation/restrict/:userId
+ * Admin only — set a user’s chatRestriction to 'active' | 'cooldown' | 'restricted'.
+ * Body: { restriction: 'active' | 'cooldown' | 'restricted', cooldownHours?: number }
+ */
+exports.setChatRestriction = catchAsync(async (req, res, next) => {
+  const { restriction, cooldownHours } = req.body;
+  const allowed = ['active', 'cooldown', 'restricted'];
+  if (!restriction || !allowed.includes(restriction)) {
+    return next(new AppError(`restriction must be one of: ${allowed.join(', ')}`, 400));
+  }
+
+  const update = { chatRestriction: restriction };
+
+  if (restriction === 'cooldown') {
+    const hours = Number(cooldownHours) || 24;
+    update.chatCooldownUntil = new Date(Date.now() + hours * 60 * 60 * 1000);
+  } else {
+    update.chatCooldownUntil = null;
+  }
+
+  const user = await User.findByIdAndUpdate(req.params.userId, update, { new: true });
+  if (!user) return next(new AppError('User not found.', 404));
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      userId: user._id,
+      chatRestriction: user.chatRestriction,
+      chatCooldownUntil: user.chatCooldownUntil,
+    },
+  });
+});
+
+/**
+ * GET /api/chat-violation/my-status
+ * Any authenticated user — returns their current chat restriction status.
+ * Auto-expires cooldowns that have passed.
+ */
+exports.getMyChatStatus = catchAsync(async (req, res, next) => {
+  const user = await User.findById(req.user._id).select('chatRestriction chatCooldownUntil');
+  if (!user) return next(new AppError('User not found.', 404));
+
+  // Auto-clear expired cooldowns
+  if (
+    user.chatRestriction === 'cooldown' &&
+    user.chatCooldownUntil &&
+    new Date() > user.chatCooldownUntil
+  ) {
+    await User.findByIdAndUpdate(req.user._id, {
+      chatRestriction: 'active',
+      chatCooldownUntil: null,
+    });
+    return res.status(200).json({
+      status: 'success',
+      data: { chatRestriction: 'active', chatCooldownUntil: null },
+    });
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      chatRestriction: user.chatRestriction || 'active',
+      chatCooldownUntil: user.chatCooldownUntil || null,
+    },
+  });
 });
