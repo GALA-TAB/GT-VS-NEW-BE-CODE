@@ -85,13 +85,17 @@ const registerUser = catchAsync(async (req, res, next) => {
   let regionCode;
 
   try {
-    const countryDialCode = parseInt(countryCode.replace('+', ''), 10);
-    regionCode = phoneUtil.getRegionCodeForCountryCode(countryDialCode);
-    if (!regionCode) throw new Error('Invalid country code.');
-
-    const number = phoneUtil.parseAndKeepRawInput(contact, regionCode);
-    if (!phoneUtil.isValidNumber(number) || !phoneUtil.isValidNumberForRegion(number, regionCode)) {
-      throw new Error('Invalid phone number for the specified country.');
+    let number;
+    if (contact && contact.startsWith('+')) {
+      number = phoneUtil.parse(contact);
+    } else {
+      const countryDialCode = parseInt(countryCode.replace('+', ''), 10);
+      regionCode = phoneUtil.getRegionCodeForCountryCode(countryDialCode);
+      if (!regionCode) throw new Error('Invalid country code.');
+      number = phoneUtil.parseAndKeepRawInput(contact, regionCode);
+    }
+    if (!phoneUtil.isValidNumber(number)) {
+      throw new Error('Invalid phone number.');
     }
     normalizedContact = phoneUtil.format(number, PhoneNumberFormat.E164);
   } catch (err) {
