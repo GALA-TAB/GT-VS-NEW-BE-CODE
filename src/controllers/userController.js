@@ -1038,7 +1038,7 @@ const getAllUsersforAdmin = catchAsync(async (req, res) => {
           vendorRole: { $ne: 'staff' },
           customerRole: { $ne: 'staff' }
 };
-  if (role) query.role = role;
+  if (role && role !== 'all') query.role = role;
   if (status) query.status = status;
 
   // build search ORs
