@@ -66,6 +66,8 @@ const sendEmail = async (template, subject, email, data) => {
 };
 
 const registerUser = catchAsync(async (req, res, next) => {
+  console.log('[registerUser] body keys:', Object.keys(req.body));
+  console.log('[registerUser] body:', JSON.stringify(req.body));
   const { error } = registerUserSchema.validate(req.body, {
     abortEarly: false
   });
@@ -75,7 +77,7 @@ const registerUser = catchAsync(async (req, res, next) => {
       acc[err.context.key] = err.message.replace(/['"]/g, '');
       return acc;
     }, {});
-
+    console.log('[registerUser] Joi validation failed:', JSON.stringify(errorFields));
     return next(new AppError('Validation failed', 400, { errorFields }));
   }
 
