@@ -153,7 +153,7 @@ const getfilterquery = (params) => {
   }
 
   if (guests) {
-    matchStage.maxGuests = { $gte: guests };
+    matchStage.maxGuests = { $gte: Number(guests) };
   }
 
   if (checkInTime && checkOutTime) {
