@@ -335,6 +335,8 @@ const servicelistingFormat = [
         companyName: '$vendorId.companyName',
         profilePicture: '$vendorId.profilePicture',
         email: '$vendorId.email',
+        contact: '$vendorId.contact',
+        countryCode: '$vendorId.countryCode',
         textForumStatus: '$vendorId.textForumStatus',
         badgeStatus: {
           $cond: [
