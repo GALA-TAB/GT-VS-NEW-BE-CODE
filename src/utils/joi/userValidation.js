@@ -138,7 +138,7 @@ const validateUserProfile = (data, options = { partial: false }) => {
     countryCode: Joi.string()
       .allow('')
       .when('contact', {
-        is: Joi.exist(),
+        is: Joi.string().min(1),
         then: Joi.string()
           .pattern(/^\+\d{1,4}$/)
           .required()
