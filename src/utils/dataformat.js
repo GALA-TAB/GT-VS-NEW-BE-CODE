@@ -332,6 +332,7 @@ const servicelistingFormat = [
         _id: '$vendorId._id',
         firstName: '$vendorId.firstName',
         lastName: '$vendorId.lastName',
+        companyName: '$vendorId.companyName',
         profilePicture: '$vendorId.profilePicture',
         email: '$vendorId.email',
         textForumStatus: '$vendorId.textForumStatus',
