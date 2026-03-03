@@ -39,3 +39,4 @@ exports.clientReviewRoute = require('./clientReviewRoute');
 exports.alertRoute = require('./alertRoute');
 exports.suspensionRoute = require('./suspensionRoute');
 exports.chatViolationRoute = require('./chatViolationRoute');
+exports.adminNoteRoute = require('./adminNoteRoute');

@@ -40,7 +40,8 @@ const {
   clientReviewRoute,
   alertRoute,
   suspensionRoute,
-  chatViolationRoute
+  chatViolationRoute,
+  adminNoteRoute
 } = require('../routes');
 
 const otherRoutes = require('./otherRoutes');
@@ -109,6 +110,7 @@ module.exports = (app) => {
   app.use('/api/alert', alertRoute);
   app.use('/api/suspension', suspensionRoute);
   app.use('/api/chat-violation', chatViolationRoute);
+  app.use('/api/admin-note', adminNoteRoute);
   otherRoutes(app);
 };
                                                                                       
