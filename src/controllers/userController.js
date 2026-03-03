@@ -1001,7 +1001,7 @@ const getAllUsersforAdmin = catchAsync(async (req, res) => {
     limit = 10,
     sortBy = 'createdAt', // allowed: createdAt, email, fullName, status, role, etc.
     sortOrder = 'desc',
-    role = 'customer',
+    role = '',
     search = '',
     status
   } = req.query;
