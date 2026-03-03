@@ -3,13 +3,19 @@ const { PhoneNumberFormat } = require('google-libphonenumber');
 
 const validateAndFormatPhoneNumber = (contact, countryCode) => {
   try {
-    const countryDialCode = parseInt(countryCode?.replace('+', ''), 10);
-    const regionCode = phoneUtil.getRegionCodeForCountryCode(countryDialCode);
-    if (!regionCode) throw new Error('Invalid country code.');
+    let number;
+    if (contact && contact.startsWith('+')) {
+      // Already in E.164 format — parse directly without region
+      number = phoneUtil.parse(contact);
+    } else {
+      const countryDialCode = parseInt(countryCode?.replace('+', ''), 10);
+      const regionCode = phoneUtil.getRegionCodeForCountryCode(countryDialCode);
+      if (!regionCode) throw new Error('Invalid country code.');
+      number = phoneUtil.parseAndKeepRawInput(contact, regionCode);
+    }
 
-    const number = phoneUtil.parseAndKeepRawInput(contact, regionCode);
-    if (!phoneUtil.isValidNumber(number) || !phoneUtil.isValidNumberForRegion(number, regionCode)) {
-      throw new Error(`Invalid ${contact} number for the specified country.`);
+    if (!phoneUtil.isValidNumber(number)) {
+      throw new Error(`Invalid phone number.`);
     }
 
     return phoneUtil.format(number, PhoneNumberFormat.E164);
