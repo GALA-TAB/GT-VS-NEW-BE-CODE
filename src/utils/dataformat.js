@@ -14,6 +14,20 @@ const servicelistingFormat = [
   },
   {
     $lookup: {
+      from: 'countries',
+      localField: 'vendorId.country',
+      foreignField: '_id',
+      as: 'vendorCountry'
+    }
+  },
+  {
+    $unwind: {
+      path: '$vendorCountry',
+      preserveNullAndEmptyArrays: true
+    }
+  },
+  {
+    $lookup: {
       from: 'kycdocuments',
       localField: 'vendorId._id',
       foreignField: 'userId',
@@ -338,6 +352,10 @@ const servicelistingFormat = [
         contact: '$vendorId.contact',
         countryCode: '$vendorId.countryCode',
         officeContact: '$vendorId.officeContact',
+        country: { $ifNull: ['$vendorCountry.country', ''] },
+        state: '$vendorId.state',
+        city: '$vendorId.city',
+        mailingAddress: '$vendorId.address.mailingAddress',
         textForumStatus: '$vendorId.textForumStatus',
         badgeStatus: {
           $cond: [
