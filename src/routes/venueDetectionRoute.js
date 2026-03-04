@@ -8,14 +8,16 @@ const {
   generateAllTitles,
   getMaskedLocation,
   getStats,
+  checkContent,
 } = require('../controllers/venueDetectionController');
 
 const router = express.Router();
 
 router.use(requireAuth);
 
-// Public (any authenticated user) — masked location for pre-booking
+// Any authenticated user
 router.get('/masked-location/:listingId', getMaskedLocation);
+router.post('/check-content', checkContent);
 
 // Admin only
 router.get('/stats',  restrictTo(['admin']), getStats);

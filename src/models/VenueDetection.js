@@ -49,6 +49,25 @@ const venueDetectionSchema = new mongoose.Schema(
       maxViolationsBeforeRestriction: { type: Number, default: 3, min: 1, max: 50 },
     },
 
+    /* ── Content / Profanity Detection ─────────────────────────── */
+    contentFiltering: {
+      enabled:                  { type: Boolean, default: true },
+      /* Category toggles — each maps to a detector in contentFilter.js */
+      blockPhoneNumbers:        { type: Boolean, default: true },
+      blockEmails:              { type: Boolean, default: true },
+      blockSocialHandles:       { type: Boolean, default: true },
+      blockLinks:               { type: Boolean, default: true },
+      blockIntentPhrases:       { type: Boolean, default: true },
+      blockPaymentInfo:         { type: Boolean, default: true },
+      blockLocationIdentity:    { type: Boolean, default: true },
+      blockBannedWords:         { type: Boolean, default: true },
+      /* Admin-managed word bank */
+      bannedWords: {
+        type: [String],
+        default: [],
+      },
+    },
+
     /* ── Pre-Booking Visibility (what clients see BEFORE booking) ─ */
     preBookingVisibility: {
       showListingTitle:         { type: Boolean, default: true },

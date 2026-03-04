@@ -3,6 +3,7 @@ const AppError   = require('../utils/appError');
 const VenueDetection = require('../models/VenueDetection');
 const ServiceListing = require('../models/ServiceListing');
 const { generateTitleForListing, generateTitleSuggestions } = require('../utils/generateListingTitle');
+const { scanContent } = require('../utils/contentFilter');
 
 /* ───────────────────────────────────────────────────────
  * Helper — ensure exactly one settings doc exists
@@ -34,6 +35,7 @@ exports.updateSettings = catchAsync(async (req, res) => {
     'locationMasking',
     'titleGeneration',
     'messageFiltering',
+    'contentFiltering',
     'preBookingVisibility',
     'postBookingReveal',
   ];
@@ -240,6 +242,63 @@ exports.generateAllTitles = catchAsync(async (req, res, next) => {
       totalProcessed: listings.length,
       updated,
       failed,
+    },
+  });
+});
+
+/* ───────────────────────────────────────────────────────
+ * POST  /api/listing-detection/check-content
+ * Scan user-submitted text against all detection rules.
+ *
+ * Body: { texts: string | string[] }
+ *   — single string or array of strings to check
+ *
+ * Returns per-text violation results.
+ * Any authenticated user can call this (frontend calls it
+ * before allowing "Next" / "Save").
+ * ─────────────────────────────────────────────────────── */
+exports.checkContent = catchAsync(async (req, res, next) => {
+  let { texts } = req.body;
+  if (!texts) return next(new AppError('Please provide texts to check', 400));
+
+  // Normalise to array
+  if (typeof texts === 'string') texts = [texts];
+  if (!Array.isArray(texts)) return next(new AppError('texts must be a string or array of strings', 400));
+
+  const settings = await getOrCreateSettings();
+  const cf = settings.contentFiltering || {};
+
+  // If content filtering is globally disabled, everything passes
+  if (cf.enabled === false) {
+    return res.status(200).json({
+      status: 'success',
+      data: {
+        clean: true,
+        results: texts.map(() => ({ clean: true, violations: [], allMatches: [], summary: '' })),
+      },
+    });
+  }
+
+  const scanOptions = {
+    checkPhoneNumbers:    cf.blockPhoneNumbers !== false,
+    checkEmails:          cf.blockEmails !== false,
+    checkSocialHandles:   cf.blockSocialHandles !== false,
+    checkLinks:           cf.blockLinks !== false,
+    checkIntentPhrases:   cf.blockIntentPhrases !== false,
+    checkPaymentInfo:     cf.blockPaymentInfo !== false,
+    checkLocationIdentity: cf.blockLocationIdentity !== false,
+    checkBannedWords:     cf.blockBannedWords !== false,
+    bannedWords:          cf.bannedWords || [],
+  };
+
+  const results = texts.map((t) => scanContent(String(t), scanOptions));
+  const allClean = results.every((r) => r.clean);
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      clean: allClean,
+      results,
     },
   });
 });
