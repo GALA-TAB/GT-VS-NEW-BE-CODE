@@ -570,6 +570,8 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
       }
 
       // 3b. Scene classification via Rekognition — sampled frames only
+      // FAIL-CLOSED: if Rekognition errors out, reject the upload rather than
+      // silently letting unscreened media through.
       if (classificationSet.has(imgSource)) {
         try {
           const classification = await classifyImage(imgSource);
@@ -581,7 +583,8 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
           }
         } catch (err) {
           console.error(`[mediaModeration] Classification error on ${isVideo ? `frame ${i + 1}` : 'image'}:`, err.message);
-          // Non-critical — continue
+          // FAIL-CLOSED: reject if we cannot verify the scene
+          reasons.push('Scene classification service is temporarily unavailable. Please try again in a moment.');
         }
       }
 
