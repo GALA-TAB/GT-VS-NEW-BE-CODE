@@ -63,6 +63,7 @@ const getfilterquery = (params) => {
     checkOutTime,
     checkInTime,
     guests,
+    guestMax,
     serviceTypeId,
     city,
     state,
@@ -154,6 +155,9 @@ const getfilterquery = (params) => {
 
   if (guests) {
     matchStage.maxGuests = { $gte: Number(guests) };
+    if (guestMax && Number(guestMax) > Number(guests)) {
+      matchStage.maxGuests.$lte = Number(guestMax);
+    }
   }
 
   if (checkInTime && checkOutTime) {
