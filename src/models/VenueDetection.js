@@ -26,7 +26,6 @@ const venueDetectionSchema = new mongoose.Schema(
       enabled:                   { type: Boolean, default: true },
       autoGenerateIfEmpty:       { type: Boolean, default: true },
       suggestToVenueOwners:      { type: Boolean, default: true },
-      allowVenueOwnerCustomTitle:{ type: Boolean, default: true },
       removeAddressFromTitles:   { type: Boolean, default: true },
       titleFormat: {
         type: String,
