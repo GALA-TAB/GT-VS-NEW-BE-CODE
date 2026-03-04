@@ -392,6 +392,7 @@ const servicelistingFormat = [
       addOnServices: 1,
       eventTypes: 1,
       sumofserviceDayPrice: 1,
+      minServiceDayPrice: 1,
       bufferTimeUnit: 1,
       bufferTime: 1
     }

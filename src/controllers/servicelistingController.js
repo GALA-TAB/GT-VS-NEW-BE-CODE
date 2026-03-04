@@ -170,11 +170,11 @@ const getfilterquery = (params) => {
   }
 
   if (minPrice && maxPrice && !startDate && !endDate) {
-    matchStage.sumofserviceDayPrice = { $gte: Number(minPrice), $lte: Number(maxPrice) };
+    matchStage.minServiceDayPrice = { $gte: Number(minPrice), $lte: Number(maxPrice) };
   } else if (minPrice && !startDate && !endDate) {
-    matchStage.sumofserviceDayPrice = { $gte: Number(minPrice) };
+    matchStage.minServiceDayPrice = { $gte: Number(minPrice) };
   } else if (maxPrice && !startDate && !endDate) {
-    matchStage.sumofserviceDayPrice = { $lte: Number(maxPrice) };
+    matchStage.minServiceDayPrice = { $lte: Number(maxPrice) };
   }
 
   if (keyword) {
@@ -1125,6 +1125,15 @@ const getServiceListingsforLandingPage = catchAsync(async (req, res) => {
               in: { $toDouble: '$$day.price' }
             }
           }
+        },
+        minServiceDayPrice: {
+          $min: {
+            $map: {
+              input: '$serviceDays',
+              as: 'day',
+              in: { $toDouble: '$$day.price' }
+            }
+          }
         }
       }
     },
@@ -1177,6 +1186,15 @@ const getServiceListingsforLandingPage = catchAsync(async (req, res) => {
               in: { $toDouble: '$$day.price' }
             }
           }
+        },
+        minServiceDayPrice: {
+          $min: {
+            $map: {
+              input: '$serviceDays',
+              as: 'day',
+              in: { $toDouble: '$$day.price' }
+            }
+          }
         }
       }
     },
@@ -1188,8 +1206,8 @@ const getServiceListingsforLandingPage = catchAsync(async (req, res) => {
       $group: {
         _id: null,
         totalCount: { $sum: 1 },
-        minPrice: { $min: '$sumofserviceDayPrice' },
-        maxPrice: { $max: '$sumofserviceDayPrice' }
+        minPrice: { $min: '$minServiceDayPrice' },
+        maxPrice: { $max: '$minServiceDayPrice' }
       }
     }
   ];
