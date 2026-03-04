@@ -18,6 +18,7 @@ const Email = require('../utils/email');
 const User = require('../models/users/User');
 const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDeleteFilter');
 const createLog = require('../utils/createLog');
+const { generateTitleForListing } = require('../utils/generateListingTitle');
 
 const getDateRange = (filter) => {
   const now = moment.utc();
@@ -696,6 +697,23 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
   if (!serviceListing) {
     return next(new AppError('No service listing found with this ID.', 404));
   }
+
+  // Auto-generate title from Listing Detection template if listing has enough data
+  if (serviceListing.completed && serviceListing.location?.city) {
+    try {
+      const populatedListing = await ServiceListing.findById(serviceListing._id)
+        .populate('serviceTypeId', 'name')
+        .populate('venuesAmenities', 'name');
+      const genTitle = await generateTitleForListing(populatedListing);
+      if (genTitle) {
+        await ServiceListing.findByIdAndUpdate(serviceListing._id, { generatedTitle: genTitle });
+        serviceListing.generatedTitle = genTitle;
+      }
+    } catch (e) {
+      console.error('Auto title generation failed:', e.message);
+    }
+  }
+
   res.locals.dataId = serviceListing._id;
   return res.status(200).json({
     status: 'success',
@@ -800,6 +818,23 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
   if (!serviceListing) {
     return next(new AppError('No service listing found with this ID.', 404));
   }
+
+  // Auto-generate title from Listing Detection template
+  if (serviceListing.location?.city) {
+    try {
+      const populatedListing = await ServiceListing.findById(serviceListing._id)
+        .populate('serviceTypeId', 'name')
+        .populate('venuesAmenities', 'name');
+      const genTitle = await generateTitleForListing(populatedListing);
+      if (genTitle) {
+        await ServiceListing.findByIdAndUpdate(serviceListing._id, { generatedTitle: genTitle });
+        serviceListing.generatedTitle = genTitle;
+      }
+    } catch (e) {
+      console.error('Auto title generation failed:', e.message);
+    }
+  }
+
   res.locals.dataId = serviceListing._id;
 
   return res.status(200).json({

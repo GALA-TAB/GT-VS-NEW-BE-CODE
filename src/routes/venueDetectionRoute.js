@@ -5,6 +5,7 @@ const {
   getSettings,
   updateSettings,
   generateTitle,
+  generateAllTitles,
   getMaskedLocation,
   getStats,
 } = require('../controllers/venueDetectionController');
@@ -21,5 +22,6 @@ router.get('/stats',  restrictTo(['admin']), getStats);
 router.get('/',       restrictTo(['admin']), getSettings);
 router.patch('/',     restrictTo(['admin']), updateSettings);
 router.post('/generate-title', restrictTo(['admin']), generateTitle);
+router.post('/generate-all-titles', restrictTo(['admin']), generateAllTitles);
 
 module.exports = router;

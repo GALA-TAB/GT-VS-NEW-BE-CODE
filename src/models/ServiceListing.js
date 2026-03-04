@@ -38,6 +38,10 @@ const ServiceListingSchema = new mongoose.Schema(
 
       trim: true
     },
+    generatedTitle: {
+      type: String,
+      trim: true
+    },
     description: {
       type: String,
 
