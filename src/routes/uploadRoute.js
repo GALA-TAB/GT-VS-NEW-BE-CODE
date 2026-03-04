@@ -9,6 +9,8 @@ const {
   getPresignedPut,
   uploadImage,
   uploadMiddleware,
+  serviceMediaMiddleware,
+  uploadServiceMedia,
   awsStatus
 } = require('../controllers/uploadController');
 const { testAwsConnection } = require('../middlewares/aws-v3');
@@ -61,6 +63,10 @@ router.get('/test-token', (req, res) => {
 // Direct server-side upload — requireAuth temporarily removed to diagnose JWT issue
 // TODO: restore requireAuth once JWT_SECRET is confirmed working
 router.post('/upload-image', uploadMiddleware, uploadImage);
+
+// ── Secure moderated upload for service listing media (photos + videos) ──
+// Runs full moderation pipeline: metadata, OCR, scene classification
+router.post('/service-media', requireAuth, serviceMediaMiddleware, uploadServiceMedia);
 
 // Simple single-file upload via presigned PUT
 router.post('/presigned-put', requireAuth, getPresignedPut);
