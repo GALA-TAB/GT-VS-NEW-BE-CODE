@@ -62,13 +62,14 @@ const AddReview = catchAsync(async (req, res, next) => {
         checkIntentPhrases:    cf.blockIntentPhrases !== false,
         checkPaymentInfo:      cf.blockPaymentInfo !== false,
         checkLocationIdentity: cf.blockLocationIdentity !== false,
+        checkProfanity:        cf.blockProfanity !== false,
         checkBannedWords:      cf.blockBannedWords !== false,
         bannedWords:           cf.bannedWords || [],
       };
       const result = scanContent(comment, scanOptions);
       if (!result.clean) {
         return next(new AppError(
-          `Your review contains prohibited content: ${result.summary}. Please remove it before submitting.`,
+          'Sharing personal information is not allowed',
           400
         ));
       }

@@ -216,6 +216,235 @@ function detectBannedWords(raw, _clean, bannedWords = []) {
   return { detected: matches.size > 0, matches: [...matches], category: 'banned_word' };
 }
 
+// ─── 9. Profanity / Vulgar Language ────────────────────────
+const PROFANITY_LIST = [
+  // ── Core profanity ──
+  'fuck', 'fucker', 'fuckers', 'fucking', 'fucked', 'fucks', 'fuckboy', 'fuckface', 'fuckhead',
+  'motherfucker', 'motherfuckers', 'motherfucking', 'mofo',
+  'shit', 'shits', 'shitty', 'shitting', 'shithead', 'shitheads', 'shithole', 'shitface', 'bullshit', 'horseshit', 'apeshit', 'dipshit', 'batshit',
+  'ass', 'asses', 'asshole', 'assholes', 'arsehole', 'arseholes', 'arse', 'dumbass', 'fatass', 'badass', 'jackass', 'smartass', 'kickass', 'hardass', 'lardass',
+  'bitch', 'bitches', 'bitchy', 'bitching', 'bitchass', 'sonofabitch',
+  'damn', 'damned', 'dammit', 'goddamn', 'goddamnit', 'goddamned',
+  'hell', 'hellhole',
+  'crap', 'crappy', 'craps',
+  'piss', 'pissed', 'pisses', 'pissing', 'pissoff',
+  'dick', 'dicks', 'dickhead', 'dickheads', 'dickface', 'dickweed',
+  'cock', 'cocks', 'cocksucker', 'cocksuckers', 'cocksucking',
+  'cunt', 'cunts',
+  'twat', 'twats',
+  'wanker', 'wankers', 'wank', 'wanking',
+  'tit', 'tits', 'titties', 'titty',
+  'boob', 'boobs', 'boobies',
+  'bastard', 'bastards',
+  'slut', 'sluts', 'slutty',
+  'whore', 'whores', 'whorish',
+  'skank', 'skanks', 'skanky',
+  'ho', 'hoe', 'hoes',
+  'tramp', 'tramps',
+  'douche', 'douchebag', 'douchebags', 'douchy', 'douchenozzle',
+  'prick', 'pricks',
+  'tosser', 'tossers',
+  'bellend', 'bellends',
+  'git', 'gits',
+  'bloody',
+  'bugger', 'buggers', 'buggered',
+  'bollocks', 'bollock',
+  'sod', 'sodding', 'sodoff',
+  'blimey',
+  'crikey',
+  // ── Racial / Ethnic slurs ──
+  'nigger', 'niggers', 'nigga', 'niggas', 'negro', 'negroes',
+  'spic', 'spics', 'spick', 'spicks',
+  'wetback', 'wetbacks',
+  'beaner', 'beaners',
+  'chink', 'chinks',
+  'gook', 'gooks',
+  'jap', 'japs',
+  'kike', 'kikes',
+  'cracker', 'crackers',
+  'honky', 'honkey', 'honkies',
+  'gringo', 'gringos',
+  'wop', 'wops',
+  'dago', 'dagos',
+  'raghead', 'ragheads',
+  'towelhead', 'towelheads',
+  'sandnigger', 'sandniggers',
+  'coon', 'coons',
+  'darkie', 'darkies', 'darky',
+  'paki', 'pakis',
+  'redskin', 'redskins',
+  'halfbreed',
+  'injun',
+  'squaw',
+  'chinaman',
+  // ── Homophobic / Gender slurs ──
+  'fag', 'fags', 'faggot', 'faggots', 'fagging',
+  'dyke', 'dykes',
+  'lesbo', 'lesbos',
+  'homo', 'homos',
+  'tranny', 'trannies',
+  'shemale', 'shemales',
+  'queer',
+  'pansy', 'pansies',
+  'sissy', 'sissies',
+  'fairy', 'fairies',
+  // ── Religious / Disability slurs ──
+  'retard', 'retards', 'retarded',
+  'spaz', 'spazz', 'spastic',
+  'cripple', 'cripples',
+  'tard', 'tards',
+  'mongoloid', 'mongoloids',
+  'lame',
+  // ── Sexual / Vulgar ──
+  'cum', 'cumshot', 'cumming', 'cummed',
+  'jizz', 'jizzed',
+  'orgasm', 'orgasms',
+  'dildo', 'dildos',
+  'vibrator',
+  'blowjob', 'blowjobs', 'bj', 'bjs',
+  'handjob', 'handjobs',
+  'rimjob', 'rimjobs',
+  'fellatio',
+  'cunnilingus',
+  'masturbate', 'masturbating', 'masturbation',
+  'jerkoff', 'jackoff',
+  'porn', 'porno', 'pornography',
+  'hentai',
+  'milf', 'milfs',
+  'gilf',
+  'anal',
+  'anus',
+  'penis', 'penises',
+  'vagina', 'vaginas',
+  'erection',
+  'boner', 'boners',
+  'horny',
+  'kinky',
+  'threesome',
+  'orgy', 'orgies',
+  'bondage',
+  'fetish',
+  'dominatrix',
+  'sadomasochism', 'bdsm',
+  'stripper', 'strippers',
+  'hooker', 'hookers',
+  'prostitute', 'prostitutes', 'prostitution',
+  'escort', 'escorts',
+  'pimp', 'pimps', 'pimping',
+  'pedophile', 'pedophiles', 'pedo', 'pedos', 'paedophile',
+  'molest', 'molester', 'molestation',
+  'rape', 'rapes', 'rapist', 'rapists', 'raping',
+  'incest',
+  'bestiality',
+  'necrophilia',
+  'pervert', 'perverts', 'perv', 'perverted',
+  'creep', 'creepy', 'creeps',
+  // ── Violence / Threat ──
+  'kill', 'killing', 'killer',
+  'murder', 'murders', 'murderer',
+  'suicide', 'suicidal',
+  'stab', 'stabbing',
+  'shoot', 'shooting',
+  'bomb', 'bombing', 'bomber',
+  'terrorist', 'terrorists', 'terrorism',
+  'massacre',
+  'genocide',
+  'lynch', 'lynching',
+  'torture', 'tortured', 'torturing',
+  'strangle', 'strangled',
+  'decapitate', 'decapitated', 'beheading',
+  // ── Drug references ──
+  'cocaine', 'crack', 'heroin', 'meth', 'methamphetamine',
+  'ecstasy', 'molly', 'mdma',
+  'lsd', 'acid',
+  'weed', 'marijuana', 'cannabis', 'ganja',
+  'stoner', 'pothead',
+  'junkie', 'junkies',
+  'crackhead', 'crackheads',
+  // ── Derogatory / Insults ──
+  'idiot', 'idiots', 'idiotic',
+  'moron', 'morons', 'moronic',
+  'stupid', 'stupidity',
+  'dumb', 'dumber', 'dumbest',
+  'loser', 'losers',
+  'pathetic',
+  'scum', 'scumbag', 'scumbags',
+  'trash', 'trashy',
+  'garbage',
+  'vermin',
+  'peasant', 'peasants',
+  'lowlife', 'lowlifes',
+  'degenerate', 'degenerates',
+  'imbecile', 'imbeciles',
+  'nutjob', 'nutjobs',
+  'psycho', 'psychos',
+  'freak', 'freaks',
+  'weirdo', 'weirdos',
+  'ugly',
+  'fatso', 'fatty',
+  'pig', 'pigs',
+  'stfu', 'gtfo', 'lmfao', 'wtf', 'af', 'smh',
+  'suck', 'sucks', 'sucking',
+  'screw', 'screwed', 'screwing',
+  'crap',
+];
+
+// Build a Set for O(1) lookup (lowercase)
+const PROFANITY_SET = new Set(PROFANITY_LIST.map(w => w.toLowerCase()));
+
+function detectProfanity(raw, _clean) {
+  const matches = new Set();
+  const lower = raw.toLowerCase();
+  
+  // ── Exact word-boundary check from built-in list ──
+  // Tokenize into words and check each
+  const words = lower.match(/[a-z]+/gi) || [];
+  for (const word of words) {
+    if (PROFANITY_SET.has(word.toLowerCase())) {
+      matches.add(word);
+    }
+  }
+
+  // ── Catch common obfuscation patterns ──
+  // f*ck, f**k, s#it, sh!t, a$$, b!tch, etc.
+  const obfuscationPatterns = [
+    /f[\*\#@!\$%]+[ck]+/gi,              // f*ck, f**k, f@ck
+    /s[\*\#@!\$%]+[h]?[i1!]+t/gi,        // s#it, sh!t, s**t
+    /b[\*\#@!\$%]+[i1!]+t[c]?[h]/gi,     // b!tch, b*tch
+    /a[\*\#@!\$%]+[s\$]+/gi,             // a$$, a**
+    /d[\*\#@!\$%]+[ck]+/gi,              // d!ck, d**k
+    /c[\*\#@!\$%]+[ck]+/gi,              // c*ck
+    /c[\*\#@!\$%]+nt/gi,                 // c*nt
+    /p[\*\#@!\$%]+[s\$]+/gi,             // p!ss
+    /n[\*\#@!\$%]+[g]+[ae]r?s?/gi,       // n**ger, n*gga
+    /f[\*\#@!\$%]+[g]+[o0]t/gi,          // f*ggot
+    /wh[\*\#@!\$%]+r[e3]?/gi,            // wh*re
+    /sl[\*\#@!\$%]+t/gi,                 // sl*t
+  ];
+  for (const p of obfuscationPatterns) {
+    const found = raw.match(p);
+    if (found) found.forEach((m) => matches.add(m.trim()));
+  }
+
+  // ── Catch leet-speak substitutions ──
+  // a→@, e→3, i→1/!, o→0, s→$, t→7
+  const leetMap = { '@': 'a', '3': 'e', '1': 'i', '!': 'i', '0': 'o', '\$': 's', '7': 't' };
+  let leetNormalized = lower;
+  for (const [char, replacement] of Object.entries(leetMap)) {
+    leetNormalized = leetNormalized.replace(new RegExp(char.replace('$', '\\$'), 'g'), replacement);
+  }
+  // Also replace * with nothing to catch f*ck → fck
+  leetNormalized = leetNormalized.replace(/[\*\#@!\$%]/g, '');
+  const leetWords = leetNormalized.match(/[a-z]+/gi) || [];
+  for (const word of leetWords) {
+    if (PROFANITY_SET.has(word.toLowerCase())) {
+      matches.add(word);
+    }
+  }
+
+  return { detected: matches.size > 0, matches: [...matches], category: 'profanity' };
+}
+
 
 /* ═══════════════════════════════════════════════════════════
  * MAIN SCAN FUNCTION
@@ -229,6 +458,7 @@ function detectBannedWords(raw, _clean, bannedWords = []) {
  *   @param {boolean} options.checkIntentPhrases       (default: true)
  *   @param {boolean} options.checkPaymentInfo         (default: true)
  *   @param {boolean} options.checkLocationIdentity    (default: true)
+ *   @param {boolean} options.checkProfanity           (default: true)
  *   @param {boolean} options.checkBannedWords         (default: true)
  *   @param {string[]} options.bannedWords             (default: [])
  *
@@ -251,7 +481,8 @@ function scanContent(text, options = {}) {
   if (options.checkIntentPhrases !== false)   checks.push(detectIntentPhrases(raw, clean));
   if (options.checkPaymentInfo !== false)     checks.push(detectPaymentInfo(raw, clean));
   if (options.checkLocationIdentity !== false) checks.push(detectLocationIdentity(raw, clean));
-  if (options.checkBannedWords !== false)     checks.push(detectBannedWords(raw, clean, options.bannedWords || []));
+  if (options.checkProfanity !== false)        checks.push(detectProfanity(raw, clean));
+  if (options.checkBannedWords !== false)      checks.push(detectBannedWords(raw, clean, options.bannedWords || []));
 
   const violations = checks.filter((c) => c.detected);
   const allMatches = violations.flatMap((v) => v.matches);
@@ -264,6 +495,7 @@ function scanContent(text, options = {}) {
     intent_phrase: 'Off-platform intent',
     payment: 'Payment/financial info',
     location_identity: 'Location/identity data',
+    profanity: 'Profanity/vulgar language',
     banned_word: 'Prohibited word',
   };
 

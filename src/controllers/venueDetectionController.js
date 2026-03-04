@@ -286,8 +286,7 @@ exports.checkContent = catchAsync(async (req, res, next) => {
     checkLinks:           cf.blockLinks !== false,
     checkIntentPhrases:   cf.blockIntentPhrases !== false,
     checkPaymentInfo:     cf.blockPaymentInfo !== false,
-    checkLocationIdentity: cf.blockLocationIdentity !== false,
-    checkBannedWords:     cf.blockBannedWords !== false,
+    checkLocationIdentity: cf.blockLocationIdentity !== false,    checkProfanity:        cf.blockProfanity !== false,    checkBannedWords:     cf.blockBannedWords !== false,
     bannedWords:          cf.bannedWords || [],
   };
 

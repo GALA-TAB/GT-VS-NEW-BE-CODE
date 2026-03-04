@@ -60,6 +60,7 @@ const venueDetectionSchema = new mongoose.Schema(
       blockIntentPhrases:       { type: Boolean, default: true },
       blockPaymentInfo:         { type: Boolean, default: true },
       blockLocationIdentity:    { type: Boolean, default: true },
+      blockProfanity:            { type: Boolean, default: true },
       blockBannedWords:         { type: Boolean, default: true },
       /* Admin-managed word bank */
       bannedWords: {
