@@ -110,7 +110,7 @@ module.exports = (app) => {
   app.use('/api/client-review', clientReviewRoute);
   app.use('/api/alert', alertRoute);
   app.use('/api/suspension', suspensionRoute);
-  app.use('/api/chat-violation', chatViolationRoute);
+  app.use('/api/inbox-detection', chatViolationRoute);
   app.use('/api/admin-note', adminNoteRoute);
   app.use('/api/listing-detection', venueDetectionRoute);
   otherRoutes(app);

@@ -15,7 +15,7 @@ const LABEL_TO_TYPE = {
 };
 
 /**
- * POST /api/chat-violation
+ * POST /api/inbox-detection
  * Called by the frontend immediately when a message is blocked.
  * Auth required (the blocked sender must be logged in).
  */
@@ -55,7 +55,7 @@ exports.reportViolation = catchAsync(async (req, res, next) => {
 });
 
 /**
- * GET /api/chat-violation
+ * GET /api/inbox-detection
  * Admin only — returns all violations, newest first.
  * Query params:
  *   ?type=phone|email|...   — filter by detectionType
@@ -78,7 +78,7 @@ exports.getViolations = catchAsync(async (req, res, next) => {
 });
 
 /**
- * PATCH /api/chat-violation/:id
+ * PATCH /api/inbox-detection/:id
  * Admin only — update status / actionTaken / adminNote.
  */
 exports.updateViolation = catchAsync(async (req, res, next) => {
@@ -103,7 +103,7 @@ exports.updateViolation = catchAsync(async (req, res, next) => {
 });
 
 /**
- * DELETE /api/chat-violation/:id
+ * DELETE /api/inbox-detection/:id
  * Admin only — remove a single violation record.
  */
 exports.deleteViolation = catchAsync(async (req, res, next) => {
@@ -113,7 +113,7 @@ exports.deleteViolation = catchAsync(async (req, res, next) => {
 });
 
 /**
- * GET /api/chat-violation/stats
+ * GET /api/inbox-detection/stats
  * Admin only — summary counts by type and status.
  */
 exports.getViolationStats = catchAsync(async (req, res, next) => {
@@ -127,7 +127,7 @@ exports.getViolationStats = catchAsync(async (req, res, next) => {
 });
 
 /**
- * PATCH /api/chat-violation/restrict/:userId
+ * PATCH /api/inbox-detection/restrict/:userId
  * Admin only — set a user’s chatRestriction to 'active' | 'cooldown' | 'restricted'.
  * Body: { restriction: 'active' | 'cooldown' | 'restricted', cooldownHours?: number }
  */
@@ -161,7 +161,7 @@ exports.setChatRestriction = catchAsync(async (req, res, next) => {
 });
 
 /**
- * GET /api/chat-violation/my-status
+ * GET /api/inbox-detection/my-status
  * Any authenticated user — returns their current chat restriction status.
  * Auto-expires cooldowns that have passed.
  */
