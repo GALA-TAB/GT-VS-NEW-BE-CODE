@@ -337,8 +337,8 @@ const CONTACT_PATTERNS = [
   { category: CAT.INVITE, pattern: /signal\.(?:me|group)\/[\w#\-]+/gi },
 
   /* ────────── 2. BANK / FINANCIAL DETAILS  (before phone — IBANs look like phone #s) */
-  // IBAN (2-letter country + 2 check digits + up to 30 alphanumeric)
-  { category: CAT.BANK, pattern: /\b[A-Z]{2}\d{2}\s?[\dA-Z]{4}\s?[\dA-Z]{4}\s?[\dA-Z]{4}(?:\s?[\dA-Z]{1,4}){0,5}\b/g },
+  // IBAN (keyword-gated to avoid OCR noise matching random uppercase+digits)
+  { category: CAT.BANK, pattern: /\biban\s*:?\s*[A-Z]{2}\d{2}\s?[\dA-Z]{4}\s?[\dA-Z]{4}\s?[\dA-Z]{4}(?:\s?[\dA-Z]{1,4}){0,5}\b/gi },
   // SWIFT / BIC
   { category: CAT.BANK, pattern: /\b(?:swift|bic)\s*(?:code)?\s*:?\s*[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b/gi },
   // Routing + account number patterns (keyword-gated → won't false-positive on random digits)
@@ -361,8 +361,6 @@ const CONTACT_PATTERNS = [
   /* ────────── 4. PAYMENT / MONEY TRANSFER  (before social — "Venmo @user") ─ */
   // App names (CashApp, Venmo, Zelle, PayPal, Apple Pay, Google Pay, Samsung Pay)
   { category: CAT.PAYMENT, pattern: /\b(?:cash\s*app|venmo|zelle|pay\s*pal|apple\s*pay|google\s*pay|samsung\s*pay|gpay)\b\s*[-:@$]?\s*[@$]?[\w@$.]{0,30}/gi },
-  // CashApp $cashtag
-  { category: CAT.PAYMENT, pattern: /\$[a-zA-Z][\w]{1,20}\b/g },
   // Venmo / PayPal "send to @…"
   { category: CAT.PAYMENT, pattern: /(?:send|pay|transfer|wire)\s+(?:(?:money|payment)\s+)?(?:to|via|through|on)\s+(?:cash\s*app|venmo|zelle|pay\s*pal|apple\s*pay|google\s*pay)\b/gi },
   // "pay me" / "send deposit"
@@ -386,20 +384,18 @@ const CONTACT_PATTERNS = [
   { category: CAT.EMAIL, pattern: /[a-zA-Z0-9._%+\-]{2,}\s*[\[({]\s*at\s*[\])}]\s*[a-zA-Z0-9.\-]+\s*[\[({]\s*dot\s*[\])}]\s*[a-zA-Z]{2,}/gi },
 
   /* ────────── 7. SOCIAL MEDIA HANDLES / USERNAMES ────────── */
-  // Platform name followed by a handle: "ig: @user", "snap user123", "tiktok - @user"
-  { category: CAT.SOCIAL, pattern: /(?:instagram|insta|ig|snap(?:chat)?|tik\s*tok|telegram|tele|whats?\s*app|discord|twitter|x\.com|facebook|fb|linked\s*in|threads|signal|wechat|line|kik|viber)\s*[-:@=|/\\]?\s*@?[\w.][\w.]{1,30}/gi },
-  // "my IG is @…" / "add me on snap …"
-  { category: CAT.SOCIAL, pattern: /(?:my|add\s+me\s+on|follow\s+(?:me\s+)?on|find\s+me\s+on|hit\s+me\s+(?:up\s+)?on|hmu\s+on)\s+(?:instagram|insta|ig|snap(?:chat)?|tik\s*tok|telegram|whats?\s*app|discord|twitter|x|facebook|fb|threads|signal|kik)\s*[-:@=]?\s*@?[\w.]{1,30}/gi },
-  // Bare @handle (3+ chars, not an email)
-  { category: CAT.SOCIAL, pattern: /(?<![a-zA-Z0-9._%+\-])@[a-zA-Z][\w.]{2,29}(?!@|\.[a-zA-Z]{2,4}\b)/g },
+  // Platform name followed by a handle: "ig: @user", "snapchat user123", "tiktok - @user"
+  // Only unambiguous platform names (removed: line, signal, fb, tele, threads, kik, viber, wechat)
+  { category: CAT.SOCIAL, pattern: /\b(?:instagram|insta|ig|snapchat|tik\s*tok|telegram|whats?\s*app|discord|twitter|x\.com|facebook)\s*[-:@=|/\\]?\s*@?[\w.][\w.]{1,30}/gi },
+  // "my IG is @…" / "add me on snapchat …"
+  { category: CAT.SOCIAL, pattern: /(?:my|add\s+me\s+on|follow\s+(?:me\s+)?on|find\s+me\s+on|hit\s+me\s+(?:up\s+)?on|hmu\s+on)\s+\b(?:instagram|insta|ig|snapchat|tik\s*tok|telegram|whats?\s*app|discord|twitter|facebook)\s*[-:@=]?\s*@?[\w.]{1,30}/gi },
 
   /* ────────── 8. PHONE NUMBERS  (last among contact — most general) ──────── */
   // US: (123) 456-7890 / 123-456-7890 / 123.456.7890 / +1 …
-  { category: CAT.PHONE, pattern: /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g },
+  // Also runs on collapsed text to catch word-disguised numbers: "five five five..."
+  { category: CAT.PHONE, pattern: /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g, onCollapsed: true },
   // International: +44 20 7946 0958, +91-98765-43210, etc.
   { category: CAT.PHONE, pattern: /\+\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{2,4}[-.\s]?\d{2,4}[-.\s]?\d{0,4}/g },
-  // 10+ consecutive digits (catches spaced / dashed numbers after collapsing)
-  { category: CAT.PHONE, pattern: /\d{10,}/g, onCollapsed: true },
   // Common text-evasion: "call / text / reach (me at) 555…"
   { category: CAT.PHONE, pattern: /(?:call|text|reach|dial|ring|phone|cell|mobile|whatsapp|viber)\s*(?:me\s*)?(?:at|on|@|:)?\s*\+?\(?\d[\d\s()\-.]{6,}\d/gi },
 
@@ -409,13 +405,12 @@ const CONTACT_PATTERNS = [
   // Standard URLs
   { category: CAT.LINK, pattern: /https?:\/\/[^\s<>"']+/gi },
   { category: CAT.LINK, pattern: /www\.[^\s<>"']+/gi },
-  // Bare domain with common TLDs
-  { category: CAT.LINK, pattern: /[a-zA-Z0-9][\w\-]*\.(?:com|net|org|io|co|me|app|dev|xyz|info|biz|us|uk|ca|au|de|fr|es|it|nl|ru|in|site|online|store|shop|link|page|bio|club|vip|pro|gg|tv|ly|gl|be)\b(?:\/[^\s<>"']*)?/gi },
   // URL shorteners
   { category: CAT.LINK, pattern: /(?:bit\.ly|tinyurl\.com|goo\.gl|t\.co|ow\.ly|is\.gd|buff\.ly|rb\.gy|cutt\.ly|shorturl\.at|tiny\.cc|surl\.li|s\.id)\b[^\s]*/gi },
 
   /* ────────── 10. "TEXT ME / CALL ME / DM ME" INTENT ────────── */
-  { category: CAT.INTENT, pattern: /\b(?:text|call|ring|dial|dms?|direct\s*message|inbox|pm|private\s*message|message|msg|hit\s*(?:me\s*)?up|hmu|reach\s*(?:out)?|contact|get\s*(?:in\s*)?touch|slide\s*(?:in(?:to)?)?(?:\s*(?:my|the))?\s*(?:dms?|inbox))\s*(?:me|us)?\b/gi },
+  // Requires "me"/"us" after verb — bare "text"/"call"/"message" alone is too common
+  { category: CAT.INTENT, pattern: /\b(?:(?:text|call|ring|dial|dm|direct\s*message|inbox|pm|private\s*message|message|msg)\s+(?:me|us)|hit\s+(?:me\s+)?up|hmu|reach\s+(?:out\s+)?to\s+(?:me|us)|contact\s+(?:me|us)|get\s+(?:in\s+)?touch\s+with\s+(?:me|us)|slide\s+in(?:to)?\s+(?:my|the)\s+(?:dms?|inbox))\b/gi },
   // "for bookings text …" / "for inquiries call …"
   { category: CAT.INTENT, pattern: /\b(?:for\s+(?:bookings?|inquir(?:ies|y)|reservations?|appointments?|info|details?))\s+(?:text|call|dm|message|email|reach|contact)\b/gi },
 
@@ -426,6 +421,29 @@ const CONTACT_PATTERNS = [
   /* ────────── 12. PHYSICAL ADDRESSES ────────── */
   { category: CAT.ADDRESS, pattern: /\b\d{1,5}\s+[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|hwy|highway)\b/gi },
 ];
+
+/**
+ * Check if OCR text looks like actual printed/written text vs noise/artifacts.
+ * Regular photos produce garbage characters from textures, patterns, decorations,
+ * and edges. This filters those out before running detection patterns.
+ */
+function isLikelyRealText(text) {
+  if (!text || text.trim().length < 8) return false;
+
+  // Count words that resemble real English (3+ consecutive letters)
+  const realWords = text.match(/[a-zA-Z]{3,}/g) || [];
+
+  // If there are at least 2 recognizable words, text is likely real
+  if (realWords.length >= 2) return true;
+
+  // Allow through even without English words if text has structured contact data:
+  // phone numbers, email addresses, or URLs (someone may photograph just a number)
+  if (/\d{3}[-.\s)]+\d{3}[-.\s]+\d{4}/.test(text)) return true;
+  if (/\S+@\S+\.\S+/.test(text)) return true;
+  if (/https?:\/\/|www\./i.test(text)) return true;
+
+  return false;
+}
 
 /**
  * Detect contact / off-platform information in OCR text.
@@ -491,16 +509,16 @@ const SIGN_PATTERNS = [
   // Business type suffixes on signs: "XYZ Restaurant", "ABC Lounge LLC"
   {
     category: 'Storefront / business sign',
-    pattern: /\b[\w\s&']{2,30}\s+(?:restaurant|café|cafe|bar|lounge|grill|bistro|diner|bakery|pizzeria|deli|pub|tavern|brewery|salon|spa|barbershop|laundry|cleaners|pharmacy|clinic|dental|hospital|hotel|motel|inn|suites|resort|bank|credit\s*union|realty|insurance|law\s*(?:firm|office)|attorney|accountant|tax|auto\s*(?:body|repair|shop|parts)|garage|tire|gas\s*station|hardware|lumber|florist|jewel(?:ry|ers?)|pawn|thrift|liquor|smoke\s*shop|vape|tattoo|nail|beauty\s*supply)\b/gi,
+    pattern: /\b[\w\s&']{2,30}\s+(?:restaurant|café|cafe|lounge|grill|bistro|diner|bakery|pizzeria|deli|pub|tavern|brewery|barbershop|laundry|cleaners|pharmacy|dental|hospital|hotel|motel|suites|resort|credit\s*union|realty|insurance|law\s*(?:firm|office)|attorney|accountant|tax|auto\s*(?:body|repair|shop|parts)|garage|tire|gas\s*station|hardware|lumber|florist|jewel(?:ry|ers?)|pawn|thrift|liquor|smoke\s*shop|vape|tattoo|beauty\s*supply)\b/gi,
   },
   {
     category: 'Storefront / business sign',
     pattern: /\b[\w\s&']{2,30}\s+(?:LLC|Inc\.?|Corp\.?|Ltd\.?|Co\.?|Company|Enterprises?|Group|Associates?|Partners?|Services?|Solutions?|Studio|Boutique|Emporium|Depot|Outlet|Market|Plaza|Center|Centre)\b/gi,
   },
-  // "OPEN" signs (large text on storefronts)
+  // "OPEN" signs — must include context (bare "open" is too common at events: open bar, open seating)
   {
     category: 'Storefront sign',
-    pattern: /\b(?:now\s+)?open(?:\s+(?:24\s*(?:hrs?|hours?)|daily|7\s*days|mon|tue|wed|thu|fri|sat|sun))?\b/gi,
+    pattern: /\b(?:now\s+open|open\s+(?:24\s*(?:hrs?|hours?)|daily|7\s*days))\b/gi,
   },
   // Hours of operation
   {
@@ -520,11 +538,6 @@ const SIGN_PATTERNS = [
   {
     category: 'Highway / road sign',
     pattern: /\b(?:exit|interstate|i-|us-|route|sr-|hwy)\s*\d{1,4}\b/gi,
-  },
-  // Directional / wayfinding signs
-  {
-    category: 'Directional sign',
-    pattern: /\b(?:entrance|exit|parking|restroom|elevator|stairs|lobby|←|→|↑|↓)\b/gi,
   },
   // Landmark / monument plaques
   {
@@ -665,22 +678,27 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
       try {
         const ocrText = await ocrImage(imgSource);
         if (ocrText.trim().length > 0) {
-          // Check for contact / off-platform info
-          const contactReasons = detectContactInfo(ocrText);
-          if (contactReasons.length > 0) {
-            console.log(`[mediaModeration] Contact info detected in ${isVideo ? `frame ${i + 1}` : 'image'}:`, contactReasons);
-            reasons.push(...contactReasons);
-          }
+          // Quality gate: skip detection if OCR text is noise/artifacts (not real text)
+          if (!isLikelyRealText(ocrText)) {
+            console.log(`[mediaModeration] OCR text filtered as noise in ${isVideo ? `frame ${i + 1}` : 'image'} (${ocrText.trim().length} chars, text: "${ocrText.trim().slice(0, 80)}...")`);
+          } else {
+            // Check for contact / off-platform info
+            const contactReasons = detectContactInfo(ocrText);
+            if (contactReasons.length > 0) {
+              console.log(`[mediaModeration] Contact info detected in ${isVideo ? `frame ${i + 1}` : 'image'}:`, contactReasons);
+              reasons.push(...contactReasons);
+            }
 
-          // Check for storefront signs, street signs, location text
-          const signReasons = detectSignsAndStorefronts(ocrText);
-          if (signReasons.length > 0) {
-            console.log(`[mediaModeration] Sign/storefront text detected in ${isVideo ? `frame ${i + 1}` : 'image'}:`, signReasons);
-            reasons.push(...signReasons);
-          }
+            // Check for storefront signs, street signs, location text
+            const signReasons = detectSignsAndStorefronts(ocrText);
+            if (signReasons.length > 0) {
+              console.log(`[mediaModeration] Sign/storefront text detected in ${isVideo ? `frame ${i + 1}` : 'image'}:`, signReasons);
+              reasons.push(...signReasons);
+            }
 
-          if (contactReasons.length === 0 && signReasons.length === 0) {
-            console.log(`[mediaModeration] OCR found text but no violations in ${isVideo ? `frame ${i + 1}` : 'image'}`);
+            if (contactReasons.length === 0 && signReasons.length === 0) {
+              console.log(`[mediaModeration] OCR found text but no violations in ${isVideo ? `frame ${i + 1}` : 'image'}`);
+            }
           }
         } else {
           console.log(`[mediaModeration] No text detected via OCR in ${isVideo ? `frame ${i + 1}` : 'image'}`);
