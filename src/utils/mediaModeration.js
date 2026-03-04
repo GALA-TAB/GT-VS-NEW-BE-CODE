@@ -210,7 +210,18 @@ function normalizeNumberWords(text) {
 }
 
 /**
- * Run OCR on an image buffer, return extracted text
+ * Run OCR on an image buffer with preprocessing for better accuracy.
+ *
+ * Tesseract performs poorly on raw photographs. We preprocess with sharp:
+ *   1. Upscale small images (Tesseract needs ~300 DPI equivalent)
+ *   2. Grayscale conversion (removes colour noise)
+ *   3. Normalize contrast (stretch histogram to full 0-255)
+ *   4. Sharpen (helps with phone-camera blur)
+ *   5. Threshold to high-contrast black/white (isolates text from backgrounds)
+ *
+ * We run OCR on MULTIPLE preprocessed variants because different thresholds /
+ * inversions pick up text on different background colours (white text on dark
+ * vs dark text on light). Results are merged.
  */
 let ocrWorker = null;
 
@@ -224,9 +235,79 @@ async function getOcrWorker() {
 }
 
 async function ocrImage(bufferOrPath) {
+  const sharp = require('sharp');
   const worker = await getOcrWorker();
-  const { data: { text } } = await worker.recognize(bufferOrPath);
-  return text || '';
+
+  let imgBuffer;
+  if (Buffer.isBuffer(bufferOrPath)) {
+    imgBuffer = bufferOrPath;
+  } else {
+    imgBuffer = fs.readFileSync(bufferOrPath);
+  }
+
+  // Get image metadata to decide upscaling
+  const metadata = await sharp(imgBuffer).metadata();
+  const minDim = Math.min(metadata.width || 0, metadata.height || 0);
+
+  // Upscale factor — aim for at least 1500px on shortest side (Tesseract sweet spot)
+  const scale = minDim > 0 && minDim < 1500 ? Math.ceil(1500 / minDim) : 1;
+  const targetW = Math.min((metadata.width || 1500) * scale, 4000);
+  const targetH = Math.min((metadata.height || 1500) * scale, 4000);
+
+  // ── Variant A: standard (dark text on light background) ──
+  const variantA = await sharp(imgBuffer)
+    .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
+    .grayscale()
+    .normalize()            // stretch contrast to full 0-255
+    .sharpen({ sigma: 1.5 })
+    .threshold(140)         // binarize: dark text → black, light bg → white
+    .png()
+    .toBuffer();
+
+  // ── Variant B: inverted (light text on dark background) ──
+  const variantB = await sharp(imgBuffer)
+    .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
+    .grayscale()
+    .normalize()
+    .sharpen({ sigma: 1.5 })
+    .negate()               // invert before threshold → catches white/bright text on dark bg
+    .threshold(140)
+    .png()
+    .toBuffer();
+
+  // ── Variant C: softer threshold (catches medium-contrast text) ──
+  const variantC = await sharp(imgBuffer)
+    .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
+    .grayscale()
+    .normalize()
+    .sharpen({ sigma: 2.0 })
+    .threshold(100)         // lower threshold → more permissive
+    .png()
+    .toBuffer();
+
+  // Run OCR on all variants and merge unique text
+  const allText = new Set();
+  for (const variant of [variantA, variantB, variantC]) {
+    try {
+      const { data: { text } } = await worker.recognize(variant);
+      if (text && text.trim().length > 0) {
+        // Split into lines, trim each, keep non-empty
+        for (const line of text.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed.length >= 2) allText.add(trimmed);
+        }
+      }
+    } catch (err) {
+      console.error('[mediaModeration] OCR variant error:', err.message);
+    }
+  }
+
+  const merged = [...allText].join('\n');
+  if (merged.length > 0) {
+    console.log(`[mediaModeration] OCR extracted ${allText.size} text lines (${merged.length} chars)`);
+    console.log(`[mediaModeration] OCR text preview: "${merged.slice(0, 200)}${merged.length > 200 ? '…' : ''}"`);
+  }
+  return merged;
 }
 
 /* ── CATEGORY CONSTANTS (used in reasons so the frontend can distinguish) ─── */
@@ -859,12 +940,17 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
         if (ocrText.trim().length > 0) {
           const contactReasons = detectContactInfo(ocrText);
           if (contactReasons.length > 0) {
+            console.log(`[mediaModeration] Contact info detected in ${isVideo ? `frame ${i + 1}` : 'image'}:`, contactReasons);
             reasons.push(...contactReasons);
+          } else {
+            console.log(`[mediaModeration] OCR found text but no contact info in ${isVideo ? `frame ${i + 1}` : 'image'}`);
           }
+        } else {
+          console.log(`[mediaModeration] No text detected via OCR in ${isVideo ? `frame ${i + 1}` : 'image'}`);
         }
       } catch (err) {
         console.error(`[mediaModeration] OCR error on ${isVideo ? `frame ${i + 1}` : 'image'}:`, err.message);
-        // Non-critical — continue
+        // Non-critical — continue (OCR failure shouldn't block uploads entirely)
       }
 
       // 3b. Scene classification via local colour analysis — sampled frames only
