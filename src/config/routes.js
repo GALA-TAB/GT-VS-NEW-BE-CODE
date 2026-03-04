@@ -41,7 +41,8 @@ const {
   alertRoute,
   suspensionRoute,
   chatViolationRoute,
-  adminNoteRoute
+  adminNoteRoute,
+  venueDetectionRoute
 } = require('../routes');
 
 const otherRoutes = require('./otherRoutes');
@@ -111,6 +112,7 @@ module.exports = (app) => {
   app.use('/api/suspension', suspensionRoute);
   app.use('/api/chat-violation', chatViolationRoute);
   app.use('/api/admin-note', adminNoteRoute);
+  app.use('/api/venue-detection', venueDetectionRoute);
   otherRoutes(app);
 };
                                                                                       

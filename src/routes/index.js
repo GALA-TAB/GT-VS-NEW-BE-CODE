@@ -40,3 +40,4 @@ exports.alertRoute = require('./alertRoute');
 exports.suspensionRoute = require('./suspensionRoute');
 exports.chatViolationRoute = require('./chatViolationRoute');
 exports.adminNoteRoute = require('./adminNoteRoute');
+exports.venueDetectionRoute = require('./venueDetectionRoute');
