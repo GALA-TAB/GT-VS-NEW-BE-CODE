@@ -23,9 +23,10 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
-const { createWorker } = require('tesseract.js');
-const ExifParser = require('exif-parser');
-const sharp = require('sharp');
+
+// ── ALL heavy deps are lazy-loaded to avoid crashing the server on startup ──
+// tesseract.js, exif-parser, sharp, @tensorflow/tfjs, @tensorflow-models/mobilenet,
+// fluent-ffmpeg, ffmpeg-static, ffprobe-static are required ONLY when actually called.
 
 /* ═══════════════════════════════════════════════════════════
  * ffmpeg / ffprobe — lazy loaded, with PATH auto-detection
@@ -103,6 +104,7 @@ function cleanupDir(dir) {
 function inspectMetadata(buffer) {
   const reasons = [];
   try {
+    const ExifParser = require('exif-parser');
     const parser = ExifParser.create(buffer);
     const result = parser.parse();
     const tags = result.tags || {};
@@ -214,6 +216,7 @@ let ocrWorker = null;
 
 async function getOcrWorker() {
   if (!ocrWorker) {
+    const { createWorker } = require('tesseract.js');
     ocrWorker = await createWorker('eng');
     console.log('[mediaModeration] Tesseract OCR worker ready');
   }
@@ -351,6 +354,7 @@ async function classifyImage(bufferOrPath) {
   }
 
   // Decode to 3-channel RGB via sharp then to tensor
+  const sharp = require('sharp');
   const { data, info } = await sharp(imgBuffer)
     .resize(224, 224, { fit: 'cover' })
     .removeAlpha()

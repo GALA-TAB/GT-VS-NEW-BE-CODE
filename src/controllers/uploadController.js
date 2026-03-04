@@ -360,11 +360,9 @@ const uploadServiceMedia = async (req, res, next) => {
     return res.status(200).json({
       success: true,
       message: 'Media uploaded and approved',
-      data: {
-        url: fileUrl,
-        type: isVideo ? 'video' : 'image',
-        key: s3Key,
-      },
+      url: fileUrl,
+      type: isVideo ? 'video' : 'image',
+      key: s3Key,
     });
   } catch (err) {
     console.error('[uploadServiceMedia] error:', err.name, err.message);
