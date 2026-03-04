@@ -16,6 +16,9 @@ const locationSchema = Joi.object({
 
         'string.base': 'state must be a string.'
     }),
+    neighborhood: Joi.string().trim().optional().allow('').messages({
+        'string.base': 'neighborhood must be a string.'
+    }),
     postalCode: Joi.string().trim().optional().messages({
 
         'string.base': 'state must be a string.'

@@ -670,8 +670,11 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     ...req.body
   };
 
+  // Note: 'title' is NOT in this list — it is auto-generated from the listing
+  // detection template (style descriptor + service type + neighborhood) and must
+  // not be required from the vendor.
   const partialSchema = serviceupdateSchema.fork(
-    ['serviceDays', 'additionalInfo', 'TimePerHour', 'location', 'media', 'description', 'title'],
+    ['serviceDays', 'additionalInfo', 'TimePerHour', 'location', 'media', 'description'],
     (schema) => schema.required()
   );
   const { error: partialError } = partialSchema.validate(updatedFields, {
@@ -698,15 +701,22 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // Auto-generate title from Listing Detection template if listing has enough data
+  // Auto-generate title from Listing Detection template.
+  // The generated title REPLACES the vendor's title to prevent personal info in titles.
   if (serviceListing.completed && (serviceListing.location?.neighborhood || serviceListing.location?.city)) {
     try {
       const populatedListing = await ServiceListing.findById(serviceListing._id)
         .populate('serviceTypeId', 'name');
       const genTitle = await generateTitleForListing(populatedListing);
       if (genTitle) {
-        await ServiceListing.findByIdAndUpdate(serviceListing._id, { generatedTitle: genTitle });
+        await ServiceListing.findByIdAndUpdate(serviceListing._id, {
+          title: genTitle,
+          generatedTitle: genTitle,
+          VerificationStatus: 'pending'
+        });
+        serviceListing.title = genTitle;
         serviceListing.generatedTitle = genTitle;
+        serviceListing.VerificationStatus = 'pending';
       }
     } catch (e) {
       console.error('Auto title generation failed:', e.message);
@@ -818,15 +828,22 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // Auto-generate title from Listing Detection template
+  // Auto-generate title from Listing Detection template.
+  // The generated title REPLACES the vendor's title to prevent personal info in titles.
   if (serviceListing.location?.neighborhood || serviceListing.location?.city) {
     try {
       const populatedListing = await ServiceListing.findById(serviceListing._id)
         .populate('serviceTypeId', 'name');
       const genTitle = await generateTitleForListing(populatedListing);
       if (genTitle) {
-        await ServiceListing.findByIdAndUpdate(serviceListing._id, { generatedTitle: genTitle });
+        await ServiceListing.findByIdAndUpdate(serviceListing._id, {
+          title: genTitle,
+          generatedTitle: genTitle,
+          VerificationStatus: 'pending'
+        });
+        serviceListing.title = genTitle;
         serviceListing.generatedTitle = genTitle;
+        serviceListing.VerificationStatus = 'pending';
       }
     } catch (e) {
       console.error('Auto title generation failed:', e.message);
