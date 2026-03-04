@@ -157,14 +157,21 @@ exports.getMaskedLocation = catchAsync(async (req, res, next) => {
   if (mask.enabled && mask.showApproximateMap && listing.location?.coordinates) {
     const [lng, lat] = listing.location.coordinates;
     // Add small random offset (within the configured radius)
-    const offsetKm = mask.mapCircleRadiusKm || 1;
-    const latOffset = (Math.random() - 0.5) * (offsetKm / 111);   // ~111 km per degree
-    const lngOffset = (Math.random() - 0.5) * (offsetKm / 85);    // ~85 km per degree (mid-latitudes)
+    const radiusMiles = mask.mapCircleRadiusMiles || 1;
+    // Enforce minimum 0.5 mile offset so circle never centres on actual address
+    const minOffsetMiles = 0.5;
+    // Random offset distance between minOffsetMiles and radiusMiles
+    const offsetDist = minOffsetMiles + Math.random() * (Math.max(radiusMiles, minOffsetMiles) - minOffsetMiles);
+    // Random angle 0-2π
+    const angle = Math.random() * 2 * Math.PI;
+    // 1 degree latitude ≈ 69 miles, 1 degree longitude ≈ 53 miles (mid-latitudes)
+    const latOffset = (offsetDist * Math.sin(angle)) / 69;
+    const lngOffset = (offsetDist * Math.cos(angle)) / 53;
     masked.approximateCoordinates = [
       parseFloat((lng + lngOffset).toFixed(4)),
       parseFloat((lat + latOffset).toFixed(4)),
     ];
-    masked.mapCircleRadiusKm = offsetKm;
+    masked.mapCircleRadiusMiles = radiusMiles;
   }
 
   // Visibility controls

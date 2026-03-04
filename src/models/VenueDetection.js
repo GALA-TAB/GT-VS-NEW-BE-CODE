@@ -12,7 +12,7 @@ const venueDetectionSchema = new mongoose.Schema(
       enabled:                { type: Boolean, default: true },
       showCityNeighborhood:   { type: Boolean, default: true },
       showApproximateMap:     { type: Boolean, default: true },
-      mapCircleRadiusKm:     { type: Number,  default: 1, min: 0.1, max: 50 },
+      mapCircleRadiusMiles:   { type: Number,  default: 1, min: 0.5, max: 31 },
       showNearbyLandmarks:   { type: Boolean, default: true },
       revealAddressAfterBooking: { type: Boolean, default: true },
       hideStreetAddress:     { type: Boolean, default: true },
