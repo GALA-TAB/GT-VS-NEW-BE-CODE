@@ -77,8 +77,7 @@ exports.generateTitle = catchAsync(async (req, res, next) => {
   }
 
   const listing = await ServiceListing.findById(req.body.serviceListingId)
-    .populate('serviceTypeId', 'name')
-    .populate('venuesAmenities', 'name');
+    .populate('serviceTypeId', 'name');
 
   if (!listing) return next(new AppError('Listing not found', 404));
 
@@ -213,10 +212,12 @@ exports.generateAllTitles = catchAsync(async (req, res, next) => {
   const listings = await ServiceListing.find({
     isDeleted: false,
     completed: true,
-    'location.city': { $exists: true, $ne: '' },
+    $or: [
+      { 'location.neighborhood': { $exists: true, $ne: '' } },
+      { 'location.city': { $exists: true, $ne: '' } },
+    ],
   })
-    .populate('serviceTypeId', 'name')
-    .populate('venuesAmenities', 'name');
+    .populate('serviceTypeId', 'name');
 
   let updated = 0;
   let failed = 0;

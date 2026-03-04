@@ -29,7 +29,7 @@ const venueDetectionSchema = new mongoose.Schema(
       removeAddressFromTitles:   { type: Boolean, default: true },
       titleFormat: {
         type: String,
-        default: '[Adjective] + [Venue Type] + in/near + [Neighborhood] + [Key Feature]',
+        default: '[Adjective] + [Venue Type] + in/near + [Neighborhood]',
       },
       styleDescriptors: {
         type: [String],

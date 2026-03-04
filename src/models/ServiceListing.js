@@ -87,6 +87,10 @@ const ServiceListingSchema = new mongoose.Schema(
         type: String,
         trim: true
       },
+      neighborhood: {
+        type: String,
+        trim: true
+      },
       postalCode: {
         type: String,
         trim: true

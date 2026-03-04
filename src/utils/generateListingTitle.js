@@ -1,44 +1,14 @@
 const VenueDetection = require('../models/VenueDetection');
 
-/* ─────────────────────────────────────────────────────────
- * Stop-words to exclude from description feature extraction
- * ───────────────────────────────────────────────────────── */
-const STOP_WORDS = new Set([
-  'the','a','an','and','or','but','is','are','was','were','be','been',
-  'being','have','has','had','do','does','did','will','would','shall',
-  'should','may','might','must','can','could','this','that','these',
-  'those','i','me','my','we','our','you','your','he','she','it','they',
-  'them','his','her','its','our','their','what','which','who','whom',
-  'where','when','how','not','no','nor','so','if','then','than','too',
-  'very','just','about','above','after','before','between','into','through',
-  'during','for','with','at','by','from','up','down','in','out','on','off',
-  'over','under','of','to','as','also','each','every','all','both','few',
-  'more','most','other','some','such','only','own','same','here','there',
-]);
-
-/**
- * Extract key descriptive words from a text string.
- */
-function extractKeyFeatures(text, maxFeatures = 5) {
-  if (!text) return [];
-  const words = text
-    .replace(/[^a-zA-Z\s]/g, ' ')
-    .split(/\s+/)
-    .map((w) => w.trim().toLowerCase())
-    .filter((w) => w.length > 3 && !STOP_WORDS.has(w));
-
-  const freq = {};
-  words.forEach((w) => { freq[w] = (freq[w] || 0) + 1; });
-
-  return Object.entries(freq)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, maxFeatures)
-    .map(([word]) => word.charAt(0).toUpperCase() + word.slice(1));
-}
-
 /**
  * Build a title from the template format by substituting variables.
- * Template: "[Adjective] + [Listing Type] + in/near + [Neighborhood] + [Key Feature]"
+ * Default template: "[Adjective] + [Venue Type] + in/near + [Neighborhood]"
+ *
+ * Supported placeholders:
+ *   [Adjective]     — randomly picked from admin-configured styleDescriptors
+ *   [Listing Type] / [Venue Type] — the service category name
+ *   [Neighborhood]  — extracted from Google Maps address components (0.5 mi radius)
+ *   [City]          — listing city
  */
 function buildFromTemplate(templateStr, vars) {
   let title = templateStr;
@@ -48,14 +18,12 @@ function buildFromTemplate(templateStr, vars) {
   title = title.replace(/\[Venue Type\]/gi, vars.listingType || '');
   title = title.replace(/\[Neighborhood\]/gi, vars.neighborhood || '');
   title = title.replace(/\[City\]/gi, vars.city || '');
-  title = title.replace(/\[Key Feature\]/gi, vars.keyFeature || '');
 
-  // Handle "in/near"
-  if (vars.neighborhood && vars.city) {
+  // Handle "in/near" — prefer neighborhood, fall back to city
+  if (vars.neighborhood) {
     title = title.replace(/in\/near/gi, 'in');
-  } else if (vars.neighborhood) {
-    title = title.replace(/in\/near/gi, 'near');
   } else if (vars.city) {
+    // No neighborhood available — swap placeholder to city context
     title = title.replace(/in\/near/gi, 'in');
   } else {
     title = title.replace(/in\/near\s*/gi, '');
@@ -63,7 +31,7 @@ function buildFromTemplate(templateStr, vars) {
 
   // Clean up separators and whitespace
   title = title.replace(/\s*\+\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();
-  title = title.replace(/\s+(in|near|with)\s*$/i, '').trim();
+  title = title.replace(/\s+(in|near)\s*$/i, '').trim();
 
   return title;
 }
@@ -71,9 +39,13 @@ function buildFromTemplate(templateStr, vars) {
 /**
  * Generate a title for a service listing using Listing Detection settings.
  *
+ * The title is built from the admin-configured template using:
+ *   - A random style descriptor as [Adjective]
+ *   - The service type name as [Venue Type]
+ *   - The Google-Maps-derived neighborhood (0.5 mi radius) as [Neighborhood]
+ *
  * @param {Object} listing — A populated ServiceListing document
- *   Expects: listing.serviceTypeId?.name, listing.location, listing.description,
- *            listing.venuesAmenities[].name
+ *   Expects: listing.serviceTypeId?.name, listing.location (with neighborhood, city)
  * @param {Object} [detectionSettings] — Optional pre-fetched VenueDetection doc
  * @returns {Promise<string|null>} The generated title, or null if disabled
  */
@@ -85,31 +57,22 @@ async function generateTitleForListing(listing, detectionSettings) {
   if (styleDescriptors.length === 0) return null;
 
   const templateFormat = settings.titleGeneration.titleFormat
-    || '[Adjective] + [Listing Type] + in/near + [Neighborhood] + [Key Feature]';
+    || '[Adjective] + [Venue Type] + in/near + [Neighborhood]';
 
-  // Extract listing info (NOT the address or original title)
-  const listingType = listing.serviceTypeId?.name || 'Space';
+  const listingType  = listing.serviceTypeId?.name || 'Space';
   const city         = listing.location?.city || '';
-  const neighborhood = listing.location?.state || '';
-  const amenityNames = (listing.venuesAmenities || []).map((a) =>
-    typeof a === 'object' && a.name ? a.name : ''
-  ).filter(Boolean);
+  // Use the neighborhood field (extracted from Google Maps address components).
+  // Falls back to city if neighborhood is not available.
+  const neighborhood = listing.location?.neighborhood || city || '';
 
-  const descriptionFeatures = extractKeyFeatures(listing.description || '');
-  const featurePool = [...amenityNames, ...descriptionFeatures].filter(Boolean);
-
-  // Pick a random descriptor and feature
+  // Pick a random descriptor
   const adjective = styleDescriptors[Math.floor(Math.random() * styleDescriptors.length)];
-  const keyFeature = featurePool.length > 0
-    ? featurePool[Math.floor(Math.random() * featurePool.length)]
-    : '';
 
   const title = buildFromTemplate(templateFormat, {
     adjective,
     listingType,
     neighborhood,
     city,
-    keyFeature,
   });
 
   return title || null;
@@ -117,6 +80,7 @@ async function generateTitleForListing(listing, detectionSettings) {
 
 /**
  * Generate multiple title suggestions (for the admin preview endpoint).
+ * Each suggestion uses a different style descriptor to show variety.
  */
 async function generateTitleSuggestions(listing, detectionSettings) {
   const settings = detectionSettings || await VenueDetection.findOne();
@@ -126,31 +90,24 @@ async function generateTitleSuggestions(listing, detectionSettings) {
   if (styleDescriptors.length === 0) return [];
 
   const templateFormat = settings.titleGeneration.titleFormat
-    || '[Adjective] + [Listing Type] + in/near + [Neighborhood] + [Key Feature]';
+    || '[Adjective] + [Venue Type] + in/near + [Neighborhood]';
 
-  const listingType = listing.serviceTypeId?.name || 'Space';
+  const listingType  = listing.serviceTypeId?.name || 'Space';
   const city         = listing.location?.city || '';
-  const neighborhood = listing.location?.state || '';
-  const amenityNames = (listing.venuesAmenities || []).map((a) =>
-    typeof a === 'object' && a.name ? a.name : ''
-  ).filter(Boolean);
-
-  const descriptionFeatures = extractKeyFeatures(listing.description || '');
-  const featurePool = [...amenityNames, ...descriptionFeatures].filter(Boolean);
+  const neighborhood = listing.location?.neighborhood || city || '';
 
   const shuffle = (arr) => [...arr].sort(() => Math.random() - 0.5);
   const shuffledDescriptors = shuffle(styleDescriptors);
-  const shuffledFeatures = shuffle(featurePool);
 
   const titles = [];
   const usedSet = new Set();
 
-  for (let i = 0; i < Math.min(4, Math.max(1, shuffledDescriptors.length)); i++) {
-    const adjective = shuffledDescriptors[i] || shuffledDescriptors[0] || '';
-    const keyFeature = shuffledFeatures[i] || shuffledFeatures[0] || '';
+  // Generate up to 5 unique title variations using different style descriptors
+  for (let i = 0; i < Math.min(5, shuffledDescriptors.length); i++) {
+    const adjective = shuffledDescriptors[i];
 
     const title = buildFromTemplate(templateFormat, {
-      adjective, listingType, neighborhood, city, keyFeature,
+      adjective, listingType, neighborhood, city,
     });
 
     if (title && !usedSet.has(title)) {
@@ -159,23 +116,10 @@ async function generateTitleSuggestions(listing, detectionSettings) {
     }
   }
 
-  // Add one variation without a key feature
-  if (shuffledDescriptors.length > 0) {
-    const basic = buildFromTemplate(templateFormat, {
-      adjective: shuffledDescriptors[0],
-      listingType, neighborhood, city, keyFeature: '',
-    });
-    if (basic && !usedSet.has(basic)) {
-      usedSet.add(basic);
-      titles.push(basic);
-    }
-  }
-
   return {
     suggestions: titles,
     metadata: {
       listingType, neighborhood, city,
-      featuresExtracted: featurePool.slice(0, 8),
       templateUsed: templateFormat,
       descriptorCount: styleDescriptors.length,
     },
@@ -185,6 +129,5 @@ async function generateTitleSuggestions(listing, detectionSettings) {
 module.exports = {
   generateTitleForListing,
   generateTitleSuggestions,
-  extractKeyFeatures,
   buildFromTemplate,
 };

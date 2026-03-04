@@ -699,11 +699,10 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
   }
 
   // Auto-generate title from Listing Detection template if listing has enough data
-  if (serviceListing.completed && serviceListing.location?.city) {
+  if (serviceListing.completed && (serviceListing.location?.neighborhood || serviceListing.location?.city)) {
     try {
       const populatedListing = await ServiceListing.findById(serviceListing._id)
-        .populate('serviceTypeId', 'name')
-        .populate('venuesAmenities', 'name');
+        .populate('serviceTypeId', 'name');
       const genTitle = await generateTitleForListing(populatedListing);
       if (genTitle) {
         await ServiceListing.findByIdAndUpdate(serviceListing._id, { generatedTitle: genTitle });
@@ -820,11 +819,10 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
   }
 
   // Auto-generate title from Listing Detection template
-  if (serviceListing.location?.city) {
+  if (serviceListing.location?.neighborhood || serviceListing.location?.city) {
     try {
       const populatedListing = await ServiceListing.findById(serviceListing._id)
-        .populate('serviceTypeId', 'name')
-        .populate('venuesAmenities', 'name');
+        .populate('serviceTypeId', 'name');
       const genTitle = await generateTitleForListing(populatedListing);
       if (genTitle) {
         await ServiceListing.findByIdAndUpdate(serviceListing._id, { generatedTitle: genTitle });
