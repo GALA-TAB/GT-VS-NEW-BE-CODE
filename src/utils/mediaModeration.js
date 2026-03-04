@@ -290,14 +290,16 @@ function detectContactInfo(text) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * 4. SCENE CLASSIFICATION — Local color / hue analysis via sharp
+ * 4. SCENE CLASSIFICATION — Local multi-signal analysis via sharp
  *
- * Analyses pixel colors in different image regions to detect:
- *   - Blue sky in the top third of the image
- *   - Green vegetation anywhere in the image
+ * Analyses pixel colors in different image regions to detect outdoor scenes.
+ * Uses multiple overlapping signals to handle diverse outdoor types:
+ *   - Blue sky, overcast sky, sunset sky in top third
+ *   - Vegetation (green), earth/sand (brown), pavement (gray) anywhere
+ *   - Top-vs-bottom brightness gradient (sky brighter than ground)
  *   - Natural lighting patterns (high brightness + high variance)
- *   - Sunset / sunrise warm-hue skies
- *   - Combined sky + vegetation signals
+ *   - High colour diversity typical of outdoor scenes
+ *   - Warm/cool colour temperature analysis
  *
  * Returns { isOutdoor, isLandmark, labels, reasons[] }
  * ═══════════════════════════════════════════════════════════ */
@@ -332,14 +334,24 @@ async function classifyImage(bufferOrPath) {
   const midEnd = Math.floor((2 * height) / 3);
 
   // ── Accumulators ──
-  let skyPixels = 0;
-  let greenPixelsAll = 0;
+  let blueSkyPixels = 0;       // classic blue sky
+  let overcastSkyPixels = 0;   // bright gray/white sky
+  let sunsetSkyPixels = 0;     // warm hue sky (orange/red)
+  let greenPixelsAll = 0;      // vegetation anywhere
+  let brownPixelsAll = 0;      // earth / sand / dirt
+  let grayPixelsAll = 0;       // roads / pavement / concrete
   let topPixelCount = 0;
-  let bottomGreenCount = 0;
   let bottomPixelCount = 0;
+  let bottomGreenCount = 0;
+  let bottomBrownCount = 0;
+  let bottomGrayCount = 0;
   let totalBrightness = 0;
+  let topBrightnessSum = 0;
+  let bottomBrightnessSum = 0;
   let saturationSum = 0;
+  let topSaturationSum = 0;
   const brightnessValues = [];
+  const topBrightnessValues = [];
   const hueHistogram = new Array(36).fill(0); // 10-degree bins
 
   for (let y = 0; y < height; y++) {
@@ -356,38 +368,63 @@ async function classifyImage(bufferOrPath) {
       saturationSum += s;
 
       // Hue histogram (only count chromatic pixels)
-      if (s > 0.1) {
+      if (s > 0.08) {
         hueHistogram[Math.floor(h / 10) % 36]++;
       }
 
-      /* ── TOP THIRD — sky detection ─────────────────────── */
+      /* ── TOP THIRD — sky detection (multiple sky types) ── */
       if (y < topEnd) {
         topPixelCount++;
-        // Blue sky: hue 190-250, moderate+ saturation, medium-high lightness
-        if (h >= 190 && h <= 250 && s > 0.2 && l > 0.3 && l < 0.85) {
-          skyPixels++;
+        topBrightnessSum += brightness;
+        topSaturationSum += s;
+        topBrightnessValues.push(brightness);
+
+        // Blue sky: hue 190-260, moderate+ saturation, medium-high lightness
+        if (h >= 185 && h <= 260 && s > 0.15 && l > 0.25 && l < 0.88) {
+          blueSkyPixels++;
         }
-        // Bright overcast / hazy sky: very bright, nearly achromatic
-        else if (l > 0.75 && s < 0.15 && brightness > 190) {
-          skyPixels++;
+        // Bright overcast / hazy sky: very bright, low saturation
+        // This catches cloudy, gray, white skies
+        if (l > 0.65 && s < 0.20 && brightness > 160) {
+          overcastSkyPixels++;
         }
-        // Sunset / sunrise: warm hue, vivid, in upper portion
-        else if ((h <= 40 || h >= 330) && s > 0.4 && l > 0.4) {
-          skyPixels++;
+        // Sunset / sunrise: warm hue, strongly vivid, in upper portion
+        // Threshold kept high (0.45) to avoid matching warm indoor walls/ceilings
+        if ((h <= 45 || h >= 320) && s > 0.45 && l > 0.35 && l < 0.9) {
+          sunsetSkyPixels++;
         }
       }
 
-      /* ── BOTTOM THIRD — ground / vegetation ────────────── */
+      /* ── BOTTOM THIRD — ground surface detection ────────── */
       if (y >= midEnd) {
         bottomPixelCount++;
-        if (h >= 80 && h <= 160 && s > 0.15 && l > 0.1 && l < 0.85) {
+        bottomBrightnessSum += brightness;
+        // Green vegetation
+        if (h >= 70 && h <= 170 && s > 0.10 && l > 0.08 && l < 0.88) {
           bottomGreenCount++;
+        }
+        // Brown / tan / earth / sand (warm hues, moderate saturation)
+        if (h >= 15 && h <= 55 && s > 0.10 && l > 0.15 && l < 0.80) {
+          bottomBrownCount++;
+        }
+        // Gray / concrete / asphalt (very low saturation, mid brightness)
+        if (s < 0.12 && l > 0.15 && l < 0.65) {
+          bottomGrayCount++;
         }
       }
 
-      /* ── ALL REGIONS — vegetation ──────────────────────── */
-      if (h >= 80 && h <= 160 && s > 0.15 && l > 0.1 && l < 0.85) {
+      /* ── ALL REGIONS — surface type detection ──────────── */
+      // Vegetation (green)
+      if (h >= 70 && h <= 170 && s > 0.10 && l > 0.08 && l < 0.88) {
         greenPixelsAll++;
+      }
+      // Earth / sand / brown
+      if (h >= 15 && h <= 55 && s > 0.10 && l > 0.15 && l < 0.80) {
+        brownPixelsAll++;
+      }
+      // Gray / pavement / roads
+      if (s < 0.10 && l > 0.15 && l < 0.60) {
+        grayPixelsAll++;
       }
     }
   }
@@ -395,64 +432,166 @@ async function classifyImage(bufferOrPath) {
   // ── Derived metrics ──
   const avgBrightness = totalBrightness / totalPixels;
   const avgSaturation = saturationSum / totalPixels;
+  const topAvgBrightness = topPixelCount > 0 ? topBrightnessSum / topPixelCount : 0;
+  const bottomAvgBrightness = bottomPixelCount > 0 ? bottomBrightnessSum / bottomPixelCount : 0;
+  const topAvgSaturation = topPixelCount > 0 ? topSaturationSum / topPixelCount : 0;
+
   const brightnessVariance =
     brightnessValues.reduce((sum, bv) => sum + (bv - avgBrightness) ** 2, 0) / totalPixels;
   const brightnessStdDev = Math.sqrt(brightnessVariance);
-  const significantHueBins = hueHistogram.filter(c => c > totalPixels * 0.02).length;
 
-  const skyRatio = topPixelCount > 0 ? skyPixels / topPixelCount : 0;
+  // Top-third brightness uniformity (sky is usually uniform)
+  const topBrightnessMean = topAvgBrightness;
+  const topBrightnessVar = topBrightnessValues.length > 0
+    ? topBrightnessValues.reduce((sum, bv) => sum + (bv - topBrightnessMean) ** 2, 0) / topBrightnessValues.length
+    : 0;
+  const topBrightnessStdDev = Math.sqrt(topBrightnessVar);
+
+  const significantHueBins = hueHistogram.filter(c => c > totalPixels * 0.015).length;
+
+  // Sky ratios
+  const combinedSkyPixels = blueSkyPixels + overcastSkyPixels + sunsetSkyPixels;
+  const skyRatio = topPixelCount > 0 ? combinedSkyPixels / topPixelCount : 0;
+  const blueSkyRatio = topPixelCount > 0 ? blueSkyPixels / topPixelCount : 0;
+  const overcastRatio = topPixelCount > 0 ? overcastSkyPixels / topPixelCount : 0;
+
+  // Surface ratios
   const greenRatio = greenPixelsAll / totalPixels;
+  const brownRatio = brownPixelsAll / totalPixels;
+  const grayRatio = grayPixelsAll / totalPixels;
   const bottomGreenRatio = bottomPixelCount > 0 ? bottomGreenCount / bottomPixelCount : 0;
+  const bottomBrownRatio = bottomPixelCount > 0 ? bottomBrownCount / bottomPixelCount : 0;
+  const bottomGrayRatio = bottomPixelCount > 0 ? bottomGrayCount / bottomPixelCount : 0;
 
-  // ── Scoring ──
+  // Top brighter than bottom? (strong outdoor signal — sky above, ground below)
+  const brightnessGradient = topAvgBrightness - bottomAvgBrightness;
+
+  // ══════════════════════════════════════════════════
+  // SCORING — each signal contributes points
+  // ══════════════════════════════════════════════════
   let outdoorScore = 0;
   const signals = [];
 
-  // Sky presence
-  if (skyRatio > 0.35) {
-    outdoorScore += 40;
-    signals.push(`sky detected in upper portion (${(skyRatio * 100).toFixed(0)}%)`);
-  } else if (skyRatio > 0.20) {
-    outdoorScore += 25;
-    signals.push(`possible sky in upper portion (${(skyRatio * 100).toFixed(0)}%)`);
-  }
-
-  // Vegetation / greenery
-  if (greenRatio > 0.25) {
+  // ── A. SKY DETECTION (any type of sky in top third) ──
+  if (skyRatio > 0.45) {
     outdoorScore += 35;
-    signals.push(`vegetation/greenery detected (${(greenRatio * 100).toFixed(0)}% of image)`);
-  } else if (greenRatio > 0.12) {
-    outdoorScore += 20;
-    signals.push(`some vegetation detected (${(greenRatio * 100).toFixed(0)}% of image)`);
+    signals.push(`sky detected in upper portion (${(skyRatio * 100).toFixed(0)}%)`);
+  } else if (skyRatio > 0.25) {
+    outdoorScore += 22;
+    signals.push(`possible sky in upper portion (${(skyRatio * 100).toFixed(0)}%)`);
+  } else if (skyRatio > 0.15) {
+    outdoorScore += 12;
+    signals.push(`faint sky signal (${(skyRatio * 100).toFixed(0)}%)`);
   }
 
-  // Natural lighting pattern (bright with high variance → sun + shadows)
-  if (avgBrightness > 140 && brightnessStdDev > 60) {
-    outdoorScore += 15;
-    signals.push('natural lighting pattern detected');
-  }
-
-  // High colour diversity + moderate saturation
-  if (significantHueBins > 10 && avgSaturation > 0.2) {
+  // Bonus for clearly blue sky
+  if (blueSkyRatio > 0.30) {
     outdoorScore += 10;
+    signals.push(`blue sky (${(blueSkyRatio * 100).toFixed(0)}%)`);
+  }
+
+  // ── B. BRIGHTNESS GRADIENT (top brighter than bottom) ──
+  // Outdoor photos almost always have sky (bright) above and ground (darker) below
+  if (brightnessGradient > 40) {
+    outdoorScore += 25;
+    signals.push(`strong top-down brightness gradient (+${brightnessGradient.toFixed(0)})`);
+  } else if (brightnessGradient > 20) {
+    outdoorScore += 15;
+    signals.push(`brightness gradient detected (+${brightnessGradient.toFixed(0)})`);
+  }
+
+  // ── C. VEGETATION / GREENERY ──
+  if (greenRatio > 0.20) {
+    outdoorScore += 30;
+    signals.push(`vegetation/greenery detected (${(greenRatio * 100).toFixed(0)}%)`);
+  } else if (greenRatio > 0.08) {
+    outdoorScore += 18;
+    signals.push(`some vegetation detected (${(greenRatio * 100).toFixed(0)}%)`);
+  }
+
+  // ── D. EARTH / SAND / BROWN SURFACES ──
+  if (brownRatio > 0.20) {
+    outdoorScore += 20;
+    signals.push(`earth/sand tones detected (${(brownRatio * 100).toFixed(0)}%)`);
+  } else if (brownRatio > 0.10) {
+    outdoorScore += 10;
+    signals.push(`some earth tones (${(brownRatio * 100).toFixed(0)}%)`);
+  }
+
+  // ── E. GRAY (pavement / road / concrete) — only boosts if combined with sky ──
+  if (grayRatio > 0.15 && skyRatio > 0.15) {
+    outdoorScore += 15;
+    signals.push(`pavement/road + sky combination`);
+  }
+
+  // ── F. NATURAL LIGHTING (bright with high variance → sun + shadows) ──
+  if (avgBrightness > 130 && brightnessStdDev > 55) {
+    outdoorScore += 12;
+    signals.push('natural lighting pattern');
+  }
+
+  // ── G. HIGH COLOUR DIVERSITY ──
+  if (significantHueBins >= 10 && avgSaturation > 0.15) {
+    outdoorScore += 8;
     signals.push('high colour diversity');
   }
 
-  // Sky + vegetation combination is a very strong outdoor indicator
-  if (skyRatio > 0.20 && greenRatio > 0.10) {
-    outdoorScore += 15;
-    signals.push('sky and vegetation combination');
+  // ── H. SKY + GROUND SURFACE COMBINATIONS (strong indicators) ──
+  // Sky + vegetation = classic outdoor
+  if (skyRatio > 0.15 && greenRatio > 0.08) {
+    outdoorScore += 12;
+    signals.push('sky + vegetation combination');
+  }
+  // Sky + earth/brown = desert, beach, hiking trail (requires gradient to avoid uniform indoor)
+  if (skyRatio > 0.15 && brownRatio > 0.08 && brightnessGradient > 10) {
+    outdoorScore += 12;
+    signals.push('sky + earth combination');
+  }
+  // Bright top + any ground surface
+  if (brightnessGradient > 15 && (bottomGreenRatio > 0.15 || bottomBrownRatio > 0.15 || bottomGrayRatio > 0.20)) {
+    outdoorScore += 10;
+    signals.push('bright sky over ground surface');
   }
 
-  // ── Indoor counter-indicators (reduce score) ──
-  if (avgBrightness < 100 && brightnessStdDev < 40) {
-    outdoorScore -= 20; // Dim, uniform lighting → likely indoor
-  }
-  if (avgSaturation < 0.1) {
-    outdoorScore -= 10; // Very desaturated → artificial light
+  // ── I. TOP-THIRD UNIFORMITY (sky tends to be uniform brightness) ──
+  if (topBrightnessStdDev < 25 && topAvgBrightness > 150 && skyRatio > 0.10) {
+    outdoorScore += 8;
+    signals.push('uniform bright top (sky-like)');
   }
 
-  const isOutdoor = outdoorScore >= 45;
+  // ══════════════════════════════════════════════════
+  // INDOOR COUNTER-INDICATORS (reduce score)
+  // ══════════════════════════════════════════════════
+  let indoorPenalty = 0;
+
+  // Dim, uniform lighting → likely indoor
+  if (avgBrightness < 100 && brightnessStdDev < 35) {
+    indoorPenalty += 20;
+  }
+  // Very low saturation throughout → artificial/fluorescent light
+  if (avgSaturation < 0.08) {
+    indoorPenalty += 12;
+  }
+  // Top is NOT brighter than bottom (reversed gradient = ceiling + floor)
+  if (brightnessGradient < -10) {
+    indoorPenalty += 10;
+  }
+  // Very few significant hue bins with low saturation = indoor beige/gray
+  if (significantHueBins < 4 && avgSaturation < 0.15) {
+    indoorPenalty += 8;
+  }
+  // Very uniform brightness → indoor lighting (real outdoor has sun/shadow variance)
+  if (brightnessStdDev < 15) {
+    indoorPenalty += 20;
+  }
+  // Flat gradient despite sky detection → uniform indoor room, not real sky
+  if (Math.abs(brightnessGradient) < 10 && skyRatio > 0.30) {
+    indoorPenalty += 15;
+  }
+
+  outdoorScore -= indoorPenalty;
+
+  const isOutdoor = outdoorScore >= 35;
   const reasons = [];
 
   if (isOutdoor) {
@@ -463,8 +602,11 @@ async function classifyImage(bufferOrPath) {
   }
 
   console.log(
-    `[classifyImage] Score: ${outdoorScore}, Sky: ${(skyRatio * 100).toFixed(1)}%, ` +
-    `Green: ${(greenRatio * 100).toFixed(1)}%, Brightness: ${avgBrightness.toFixed(0)} ± ${brightnessStdDev.toFixed(0)}, ` +
+    `[classifyImage] Score: ${outdoorScore} (penalty: -${indoorPenalty}), Sky: ${(skyRatio * 100).toFixed(1)}% ` +
+    `(blue: ${(blueSkyRatio * 100).toFixed(1)}%, overcast: ${(overcastRatio * 100).toFixed(1)}%), ` +
+    `Green: ${(greenRatio * 100).toFixed(1)}%, Brown: ${(brownRatio * 100).toFixed(1)}%, Gray: ${(grayRatio * 100).toFixed(1)}%, ` +
+    `Brightness: ${avgBrightness.toFixed(0)} ± ${brightnessStdDev.toFixed(0)}, ` +
+    `Gradient: ${brightnessGradient.toFixed(0)}, TopStd: ${topBrightnessStdDev.toFixed(0)}, ` +
     `Sat: ${avgSaturation.toFixed(2)}, Hue bins: ${significantHueBins}, Outdoor: ${isOutdoor}, ` +
     `Signals: [${signals.join(', ')}]`
   );
