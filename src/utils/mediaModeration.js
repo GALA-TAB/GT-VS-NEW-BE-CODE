@@ -492,16 +492,107 @@ function detectContactInfo(text) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * 4. SCENE CLASSIFICATION — Local multi-signal analysis via sharp
+ * 3b. SIGN / STOREFRONT / LOCATION TEXT DETECTION (OCR-based)
  *
- * Analyses pixel colors in different image regions to detect outdoor scenes.
- * Uses multiple overlapping signals to handle diverse outdoor types:
- *   - Blue sky, overcast sky, sunset sky in top third
- *   - Vegetation (green), earth/sand (brown), pavement (gray) anywhere
- *   - Top-vs-bottom brightness gradient (sky brighter than ground)
- *   - Natural lighting patterns (high brightness + high variance)
- *   - High colour diversity typical of outdoor scenes
- *   - Warm/cool colour temperature analysis
+ * Detects text that indicates the photo was taken of a storefront,
+ * street sign, or other location-identifying signage.  This catches:
+ *   - Business name patterns ("XYZ Catering", "ABC Events LLC")
+ *   - Street / road signs ("Main St", "5th Avenue")
+ *   - "OPEN" / hours-of-operation signs
+ *   - Directional / wayfinding signs
+ *   - Visible complete addresses on buildings
+ *   - Landmark / monument plaques
+ *
+ * These are separate from contactInfo patterns (which catch phone #s,
+ * emails, social handles, payment info, etc.).
+ * ═══════════════════════════════════════════════════════════ */
+
+const SIGN_PATTERNS = [
+  // Business type suffixes on signs: "XYZ Restaurant", "ABC Lounge LLC"
+  {
+    category: 'Storefront / business sign',
+    pattern: /\b[\w\s&']{2,30}\s+(?:restaurant|café|cafe|bar|lounge|grill|bistro|diner|bakery|pizzeria|deli|pub|tavern|brewery|salon|spa|barbershop|laundry|cleaners|pharmacy|clinic|dental|hospital|hotel|motel|inn|suites|resort|bank|credit\s*union|realty|insurance|law\s*(?:firm|office)|attorney|accountant|tax|auto\s*(?:body|repair|shop|parts)|garage|tire|gas\s*station|hardware|lumber|florist|jewel(?:ry|ers?)|pawn|thrift|liquor|smoke\s*shop|vape|tattoo|nail|beauty\s*supply)\b/gi,
+  },
+  {
+    category: 'Storefront / business sign',
+    pattern: /\b[\w\s&']{2,30}\s+(?:LLC|Inc\.?|Corp\.?|Ltd\.?|Co\.?|Company|Enterprises?|Group|Associates?|Partners?|Services?|Solutions?|Studio|Boutique|Emporium|Depot|Outlet|Market|Plaza|Center|Centre)\b/gi,
+  },
+  // "OPEN" signs (large text on storefronts)
+  {
+    category: 'Storefront sign',
+    pattern: /\b(?:now\s+)?open(?:\s+(?:24\s*(?:hrs?|hours?)|daily|7\s*days|mon|tue|wed|thu|fri|sat|sun))?\b/gi,
+  },
+  // Hours of operation
+  {
+    category: 'Hours-of-operation sign',
+    pattern: /\b(?:hours|open)\s*:\s*(?:mon|tue|wed|thu|fri|sat|sun|m|t|w|th|f|sa|su)[\s\S]{3,40}(?:am|pm|noon|midnight)\b/gi,
+  },
+  {
+    category: 'Hours-of-operation sign',
+    pattern: /\b\d{1,2}\s*(?::\d{2})?\s*(?:am|pm)\s*[-–—to]+\s*\d{1,2}\s*(?::\d{2})?\s*(?:am|pm)\b/gi,
+  },
+  // Street signs / road name patterns
+  {
+    category: 'Street sign',
+    pattern: /\b(?:north|south|east|west|n\.?|s\.?|e\.?|w\.?)\s+\d{0,5}(?:st|nd|rd|th)?\s*(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|hwy|highway|terr(?:ace)?|pike|trail|crossing|loop)\b/gi,
+  },
+  // "Exit" / highway signs
+  {
+    category: 'Highway / road sign',
+    pattern: /\b(?:exit|interstate|i-|us-|route|sr-|hwy)\s*\d{1,4}\b/gi,
+  },
+  // Directional / wayfinding signs
+  {
+    category: 'Directional sign',
+    pattern: /\b(?:entrance|exit|parking|restroom|elevator|stairs|lobby|←|→|↑|↓)\b/gi,
+  },
+  // Landmark / monument plaques
+  {
+    category: 'Landmark plaque / monument',
+    pattern: /\b(?:national\s+(?:monument|park|historic)|historic\s+(?:site|landmark|district)|est(?:ablished)?\.?\s*\d{4}|founded\s+(?:in\s+)?\d{4}|registered\s+landmark|heritage\s+site|memorial)\b/gi,
+  },
+];
+
+/**
+ * Detect storefront signs, street signs, and location-identifying text.
+ * Returns an array of reason strings (empty = no sign detected).
+ */
+function detectSignsAndStorefronts(text) {
+  if (!text || text.trim().length < 3) return [];
+
+  const reasons = [];
+  const seenCategories = new Set();
+
+  for (const { category, pattern } of SIGN_PATTERNS) {
+    if (seenCategories.has(category)) continue;
+    const re = new RegExp(pattern.source, pattern.flags);
+    const match = text.match(re);
+    if (match && match.length > 0) {
+      const snippet = match[0].length > 45 ? match[0].slice(0, 42) + '…' : match[0];
+      reasons.push(
+        `${category} detected: "${snippet}". Photos of storefronts, street signs, and location-identifying signage are not allowed.`
+      );
+      seenCategories.add(category);
+    }
+  }
+
+  return reasons;
+}
+
+/* ═══════════════════════════════════════════════════════════
+ * 4. SCENE CLASSIFICATION — Conservative outdoor-only detection
+ *
+ * GOAL: Block only OBVIOUS outdoor landscapes / street photos while
+ * allowing all indoor venue photos (catering halls, ballrooms, event
+ * spaces, baby showers, weddings, etc.).
+ *
+ * We intentionally keep this VERY conservative — it should only
+ * trigger on images with unmistakable blue sky covering the top of
+ * the frame plus natural ground (grass/earth) at the bottom.
+ * 
+ * Overcast / gray / white ceilings and bright indoor lighting must
+ * NEVER trigger this.  Storefront signs, street signs, and location
+ * info are caught separately by the OCR + sign-detection pipeline.
  *
  * Returns { isOutdoor, isLandmark, labels, reasons[] }
  * ═══════════════════════════════════════════════════════════ */
@@ -536,25 +627,18 @@ async function classifyImage(bufferOrPath) {
   const midEnd = Math.floor((2 * height) / 3);
 
   // ── Accumulators ──
-  let blueSkyPixels = 0;       // classic blue sky
-  let overcastSkyPixels = 0;   // bright gray/white sky
-  let sunsetSkyPixels = 0;     // warm hue sky (orange/red)
+  let blueSkyPixels = 0;       // ONLY clearly blue sky — not overcast / white
   let greenPixelsAll = 0;      // vegetation anywhere
   let brownPixelsAll = 0;      // earth / sand / dirt
-  let grayPixelsAll = 0;       // roads / pavement / concrete
   let topPixelCount = 0;
   let bottomPixelCount = 0;
   let bottomGreenCount = 0;
   let bottomBrownCount = 0;
-  let bottomGrayCount = 0;
   let totalBrightness = 0;
   let topBrightnessSum = 0;
   let bottomBrightnessSum = 0;
   let saturationSum = 0;
-  let topSaturationSum = 0;
   const brightnessValues = [];
-  const topBrightnessValues = [];
-  const hueHistogram = new Array(36).fill(0); // 10-degree bins
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -569,64 +653,38 @@ async function classifyImage(bufferOrPath) {
       const { h, s, l } = rgbToHsl(r, g, b);
       saturationSum += s;
 
-      // Hue histogram (only count chromatic pixels)
-      if (s > 0.08) {
-        hueHistogram[Math.floor(h / 10) % 36]++;
-      }
-
-      /* ── TOP THIRD — sky detection (multiple sky types) ── */
+      /* ── TOP THIRD — only detect CLEAR BLUE sky ── */
       if (y < topEnd) {
         topPixelCount++;
         topBrightnessSum += brightness;
-        topSaturationSum += s;
-        topBrightnessValues.push(brightness);
 
-        // Blue sky: hue 190-260, moderate+ saturation, medium-high lightness
-        if (h >= 185 && h <= 260 && s > 0.15 && l > 0.25 && l < 0.88) {
+        // Blue sky ONLY: hue 190-255, decent saturation, medium-high lightness
+        // NOT overcast, NOT white ceilings, NOT gray — those are indoor-safe
+        if (h >= 190 && h <= 255 && s > 0.25 && l > 0.30 && l < 0.85) {
           blueSkyPixels++;
-        }
-        // Bright overcast / hazy sky: very bright, low saturation
-        // This catches cloudy, gray, white skies
-        if (l > 0.65 && s < 0.20 && brightness > 160) {
-          overcastSkyPixels++;
-        }
-        // Sunset / sunrise: warm hue, strongly vivid, in upper portion
-        // Threshold kept high (0.45) to avoid matching warm indoor walls/ceilings
-        if ((h <= 45 || h >= 320) && s > 0.45 && l > 0.35 && l < 0.9) {
-          sunsetSkyPixels++;
         }
       }
 
-      /* ── BOTTOM THIRD — ground surface detection ────────── */
+      /* ── BOTTOM THIRD — natural ground surfaces ── */
       if (y >= midEnd) {
         bottomPixelCount++;
         bottomBrightnessSum += brightness;
-        // Green vegetation
-        if (h >= 70 && h <= 170 && s > 0.10 && l > 0.08 && l < 0.88) {
+        // Green vegetation (strong green only)
+        if (h >= 75 && h <= 165 && s > 0.15 && l > 0.10 && l < 0.85) {
           bottomGreenCount++;
         }
-        // Brown / tan / earth / sand (warm hues, moderate saturation)
-        if (h >= 15 && h <= 55 && s > 0.10 && l > 0.15 && l < 0.80) {
+        // Brown earth / sand / dirt
+        if (h >= 15 && h <= 50 && s > 0.12 && l > 0.15 && l < 0.75) {
           bottomBrownCount++;
-        }
-        // Gray / concrete / asphalt (very low saturation, mid brightness)
-        if (s < 0.12 && l > 0.15 && l < 0.65) {
-          bottomGrayCount++;
         }
       }
 
-      /* ── ALL REGIONS — surface type detection ──────────── */
-      // Vegetation (green)
-      if (h >= 70 && h <= 170 && s > 0.10 && l > 0.08 && l < 0.88) {
+      /* ── ALL REGIONS — overall surface percentages ── */
+      if (h >= 75 && h <= 165 && s > 0.15 && l > 0.10 && l < 0.85) {
         greenPixelsAll++;
       }
-      // Earth / sand / brown
-      if (h >= 15 && h <= 55 && s > 0.10 && l > 0.15 && l < 0.80) {
+      if (h >= 15 && h <= 50 && s > 0.12 && l > 0.15 && l < 0.75) {
         brownPixelsAll++;
-      }
-      // Gray / pavement / roads
-      if (s < 0.10 && l > 0.15 && l < 0.60) {
-        grayPixelsAll++;
       }
     }
   }
@@ -636,164 +694,104 @@ async function classifyImage(bufferOrPath) {
   const avgSaturation = saturationSum / totalPixels;
   const topAvgBrightness = topPixelCount > 0 ? topBrightnessSum / topPixelCount : 0;
   const bottomAvgBrightness = bottomPixelCount > 0 ? bottomBrightnessSum / bottomPixelCount : 0;
-  const topAvgSaturation = topPixelCount > 0 ? topSaturationSum / topPixelCount : 0;
+  const brightnessStdDev = Math.sqrt(
+    brightnessValues.reduce((sum, bv) => sum + (bv - avgBrightness) ** 2, 0) / totalPixels
+  );
 
-  const brightnessVariance =
-    brightnessValues.reduce((sum, bv) => sum + (bv - avgBrightness) ** 2, 0) / totalPixels;
-  const brightnessStdDev = Math.sqrt(brightnessVariance);
-
-  // Top-third brightness uniformity (sky is usually uniform)
-  const topBrightnessMean = topAvgBrightness;
-  const topBrightnessVar = topBrightnessValues.length > 0
-    ? topBrightnessValues.reduce((sum, bv) => sum + (bv - topBrightnessMean) ** 2, 0) / topBrightnessValues.length
-    : 0;
-  const topBrightnessStdDev = Math.sqrt(topBrightnessVar);
-
-  const significantHueBins = hueHistogram.filter(c => c > totalPixels * 0.015).length;
-
-  // Sky ratios
-  const combinedSkyPixels = blueSkyPixels + overcastSkyPixels + sunsetSkyPixels;
-  const skyRatio = topPixelCount > 0 ? combinedSkyPixels / topPixelCount : 0;
+  // Blue sky ratio relative to top third
   const blueSkyRatio = topPixelCount > 0 ? blueSkyPixels / topPixelCount : 0;
-  const overcastRatio = topPixelCount > 0 ? overcastSkyPixels / topPixelCount : 0;
 
-  // Surface ratios
-  const greenRatio = greenPixelsAll / totalPixels;
-  const brownRatio = brownPixelsAll / totalPixels;
-  const grayRatio = grayPixelsAll / totalPixels;
+  // Ground surface ratios in bottom third
   const bottomGreenRatio = bottomPixelCount > 0 ? bottomGreenCount / bottomPixelCount : 0;
   const bottomBrownRatio = bottomPixelCount > 0 ? bottomBrownCount / bottomPixelCount : 0;
-  const bottomGrayRatio = bottomPixelCount > 0 ? bottomGrayCount / bottomPixelCount : 0;
+  const greenRatio = greenPixelsAll / totalPixels;
+  const brownRatio = brownPixelsAll / totalPixels;
 
-  // Top brighter than bottom? (strong outdoor signal — sky above, ground below)
+  // Brightness gradient: sky brighter above, ground darker below
   const brightnessGradient = topAvgBrightness - bottomAvgBrightness;
 
   // ══════════════════════════════════════════════════
-  // SCORING — each signal contributes points
+  // CONSERVATIVE SCORING — only obvious outdoor scenes
+  //
+  // The ONLY pixel pattern we trust is:
+  //   Clear blue sky in the top + natural ground in the bottom
+  //   + a strong top-down brightness gradient
+  //
+  // Everything else (overcast, gray, bright white, warm tones)
+  // is left to OCR sign detection, because indoor venues share
+  // those same colour profiles.
   // ══════════════════════════════════════════════════
   let outdoorScore = 0;
   const signals = [];
 
-  // ── A. SKY DETECTION (any type of sky in top third) ──
-  if (skyRatio > 0.45) {
-    outdoorScore += 35;
-    signals.push(`sky detected in upper portion (${(skyRatio * 100).toFixed(0)}%)`);
-  } else if (skyRatio > 0.25) {
-    outdoorScore += 22;
-    signals.push(`possible sky in upper portion (${(skyRatio * 100).toFixed(0)}%)`);
-  } else if (skyRatio > 0.15) {
-    outdoorScore += 12;
-    signals.push(`faint sky signal (${(skyRatio * 100).toFixed(0)}%)`);
-  }
-
-  // Bonus for clearly blue sky
-  if (blueSkyRatio > 0.30) {
-    outdoorScore += 10;
+  // ── A. CLEAR BLUE SKY (not overcast — that's too similar to indoor ceilings) ──
+  if (blueSkyRatio > 0.55) {
+    outdoorScore += 40;
+    signals.push(`clear blue sky (${(blueSkyRatio * 100).toFixed(0)}%)`);
+  } else if (blueSkyRatio > 0.35) {
+    outdoorScore += 25;
     signals.push(`blue sky (${(blueSkyRatio * 100).toFixed(0)}%)`);
   }
 
-  // ── B. BRIGHTNESS GRADIENT (top brighter than bottom) ──
-  // Outdoor photos almost always have sky (bright) above and ground (darker) below
-  if (brightnessGradient > 40) {
-    outdoorScore += 25;
-    signals.push(`strong top-down brightness gradient (+${brightnessGradient.toFixed(0)})`);
-  } else if (brightnessGradient > 20) {
-    outdoorScore += 15;
-    signals.push(`brightness gradient detected (+${brightnessGradient.toFixed(0)})`);
-  }
-
-  // ── C. VEGETATION / GREENERY ──
-  if (greenRatio > 0.20) {
-    outdoorScore += 30;
-    signals.push(`vegetation/greenery detected (${(greenRatio * 100).toFixed(0)}%)`);
-  } else if (greenRatio > 0.08) {
-    outdoorScore += 18;
-    signals.push(`some vegetation detected (${(greenRatio * 100).toFixed(0)}%)`);
-  }
-
-  // ── D. EARTH / SAND / BROWN SURFACES ──
-  if (brownRatio > 0.20) {
+  // ── B. BRIGHTNESS GRADIENT (sky above, ground below) ──
+  // Must be strong — indoor overhead lighting creates mild gradients too
+  if (brightnessGradient > 50) {
     outdoorScore += 20;
-    signals.push(`earth/sand tones detected (${(brownRatio * 100).toFixed(0)}%)`);
-  } else if (brownRatio > 0.10) {
-    outdoorScore += 10;
-    signals.push(`some earth tones (${(brownRatio * 100).toFixed(0)}%)`);
+    signals.push(`strong sky-to-ground brightness gradient (+${brightnessGradient.toFixed(0)})`);
   }
 
-  // ── E. GRAY (pavement / road / concrete) — only boosts if combined with sky ──
-  if (grayRatio > 0.15 && skyRatio > 0.15) {
+  // ── C. NATURAL GROUND IN BOTTOM THIRD ──
+  //   Only counts if there's also blue sky above (avoids green décor / brown floors)
+  if (blueSkyRatio > 0.20) {
+    if (bottomGreenRatio > 0.25) {
+      outdoorScore += 20;
+      signals.push(`vegetation below sky (${(bottomGreenRatio * 100).toFixed(0)}%)`);
+    } else if (bottomBrownRatio > 0.25) {
+      outdoorScore += 15;
+      signals.push(`earth/sand below sky (${(bottomBrownRatio * 100).toFixed(0)}%)`);
+    }
+  }
+
+  // ── D. HIGH VEGETATION + BLUE SKY COMBO (classic landscape) ──
+  if (blueSkyRatio > 0.25 && greenRatio > 0.20 && brightnessGradient > 30) {
     outdoorScore += 15;
-    signals.push(`pavement/road + sky combination`);
+    signals.push('blue sky + vegetation + gradient (landscape)');
   }
 
-  // ── F. NATURAL LIGHTING (bright with high variance → sun + shadows) ──
-  if (avgBrightness > 130 && brightnessStdDev > 55) {
-    outdoorScore += 12;
-    signals.push('natural lighting pattern');
-  }
-
-  // ── G. HIGH COLOUR DIVERSITY ──
-  if (significantHueBins >= 10 && avgSaturation > 0.15) {
-    outdoorScore += 8;
-    signals.push('high colour diversity');
-  }
-
-  // ── H. SKY + GROUND SURFACE COMBINATIONS (strong indicators) ──
-  // Sky + vegetation = classic outdoor
-  if (skyRatio > 0.15 && greenRatio > 0.08) {
-    outdoorScore += 12;
-    signals.push('sky + vegetation combination');
-  }
-  // Sky + earth/brown = desert, beach, hiking trail (requires gradient to avoid uniform indoor)
-  if (skyRatio > 0.15 && brownRatio > 0.08 && brightnessGradient > 10) {
-    outdoorScore += 12;
-    signals.push('sky + earth combination');
-  }
-  // Bright top + any ground surface
-  if (brightnessGradient > 15 && (bottomGreenRatio > 0.15 || bottomBrownRatio > 0.15 || bottomGrayRatio > 0.20)) {
+  // ── E. BLUE SKY + EARTH/SAND COMBO (desert / beach) ──
+  if (blueSkyRatio > 0.25 && brownRatio > 0.20) {
     outdoorScore += 10;
-    signals.push('bright sky over ground surface');
-  }
-
-  // ── I. TOP-THIRD UNIFORMITY (sky tends to be uniform brightness) ──
-  if (topBrightnessStdDev < 25 && topAvgBrightness > 150 && skyRatio > 0.10) {
-    outdoorScore += 8;
-    signals.push('uniform bright top (sky-like)');
+    signals.push('blue sky + earth/sand (desert/beach)');
   }
 
   // ══════════════════════════════════════════════════
-  // INDOOR COUNTER-INDICATORS (reduce score)
+  // INDOOR-SAFE GUARDS (aggressive penalties)
+  // — must protect catering halls, ballrooms, event spaces
   // ══════════════════════════════════════════════════
   let indoorPenalty = 0;
 
-  // Dim, uniform lighting → likely indoor
-  if (avgBrightness < 100 && brightnessStdDev < 35) {
+  // Low brightness variance → even artificial lighting → indoor
+  // (skip if there's real blue sky — deserts/beaches can have uniform brightness)
+  if (brightnessStdDev < 30 && blueSkyRatio < 0.20) {
+    indoorPenalty += 25;
+  }
+  // Flat gradient → no real sky/ground separation
+  if (Math.abs(brightnessGradient) < 20) {
     indoorPenalty += 20;
   }
-  // Very low saturation throughout → artificial/fluorescent light
-  if (avgSaturation < 0.08) {
-    indoorPenalty += 12;
-  }
-  // Top is NOT brighter than bottom (reversed gradient = ceiling + floor)
-  if (brightnessGradient < -10) {
-    indoorPenalty += 10;
-  }
-  // Very few significant hue bins with low saturation = indoor beige/gray
-  if (significantHueBins < 4 && avgSaturation < 0.15) {
-    indoorPenalty += 8;
-  }
-  // Very uniform brightness → indoor lighting (real outdoor has sun/shadow variance)
-  if (brightnessStdDev < 15) {
-    indoorPenalty += 20;
-  }
-  // Flat gradient despite sky detection → uniform indoor room, not real sky
-  if (Math.abs(brightnessGradient) < 10 && skyRatio > 0.30) {
+  // Overall dim → indoor
+  if (avgBrightness < 110) {
     indoorPenalty += 15;
+  }
+  // No blue sky at all but still scoring from other signals
+  if (blueSkyRatio < 0.10) {
+    indoorPenalty += 30;
   }
 
   outdoorScore -= indoorPenalty;
 
-  const isOutdoor = outdoorScore >= 35;
+  // ── VERY HIGH THRESHOLD — only unmistakable outdoor scenes ──
+  const isOutdoor = outdoorScore >= 60;
   const reasons = [];
 
   if (isOutdoor) {
@@ -804,18 +802,18 @@ async function classifyImage(bufferOrPath) {
   }
 
   console.log(
-    `[classifyImage] Score: ${outdoorScore} (penalty: -${indoorPenalty}), Sky: ${(skyRatio * 100).toFixed(1)}% ` +
-    `(blue: ${(blueSkyRatio * 100).toFixed(1)}%, overcast: ${(overcastRatio * 100).toFixed(1)}%), ` +
-    `Green: ${(greenRatio * 100).toFixed(1)}%, Brown: ${(brownRatio * 100).toFixed(1)}%, Gray: ${(grayRatio * 100).toFixed(1)}%, ` +
+    `[classifyImage] Score: ${outdoorScore} (penalty: -${indoorPenalty}), ` +
+    `BlueSky: ${(blueSkyRatio * 100).toFixed(1)}%, ` +
+    `Green: ${(greenRatio * 100).toFixed(1)}%, Brown: ${(brownRatio * 100).toFixed(1)}%, ` +
     `Brightness: ${avgBrightness.toFixed(0)} ± ${brightnessStdDev.toFixed(0)}, ` +
-    `Gradient: ${brightnessGradient.toFixed(0)}, TopStd: ${topBrightnessStdDev.toFixed(0)}, ` +
-    `Sat: ${avgSaturation.toFixed(2)}, Hue bins: ${significantHueBins}, Outdoor: ${isOutdoor}, ` +
+    `Gradient: ${brightnessGradient.toFixed(0)}, ` +
+    `Sat: ${avgSaturation.toFixed(2)}, Outdoor: ${isOutdoor}, ` +
     `Signals: [${signals.join(', ')}]`
   );
 
   return {
     isOutdoor,
-    isLandmark: false, // local analysis cannot detect specific landmarks
+    isLandmark: false,
     labels: signals.map(s => ({ name: s, confidence: 0, parents: [] })),
     reasons,
   };
@@ -934,16 +932,26 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
     for (let i = 0; i < allImages.length; i++) {
       const imgSource = allImages[i];
 
-      // 3a. OCR — detect text containing contact info (runs on every frame)
+      // 3a. OCR — detect contact info + storefront/sign text (runs on every frame)
       try {
         const ocrText = await ocrImage(imgSource);
         if (ocrText.trim().length > 0) {
+          // Check for contact / off-platform info
           const contactReasons = detectContactInfo(ocrText);
           if (contactReasons.length > 0) {
             console.log(`[mediaModeration] Contact info detected in ${isVideo ? `frame ${i + 1}` : 'image'}:`, contactReasons);
             reasons.push(...contactReasons);
-          } else {
-            console.log(`[mediaModeration] OCR found text but no contact info in ${isVideo ? `frame ${i + 1}` : 'image'}`);
+          }
+
+          // Check for storefront signs, street signs, location text
+          const signReasons = detectSignsAndStorefronts(ocrText);
+          if (signReasons.length > 0) {
+            console.log(`[mediaModeration] Sign/storefront text detected in ${isVideo ? `frame ${i + 1}` : 'image'}:`, signReasons);
+            reasons.push(...signReasons);
+          }
+
+          if (contactReasons.length === 0 && signReasons.length === 0) {
+            console.log(`[mediaModeration] OCR found text but no violations in ${isVideo ? `frame ${i + 1}` : 'image'}`);
           }
         } else {
           console.log(`[mediaModeration] No text detected via OCR in ${isVideo ? `frame ${i + 1}` : 'image'}`);
@@ -1008,5 +1016,6 @@ module.exports = {
   extractFrames,
   ocrImage,
   detectContactInfo,
+  detectSignsAndStorefronts,
   classifyImage,
 };
