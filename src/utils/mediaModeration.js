@@ -7,15 +7,14 @@
  *   1. Metadata inspection (GPS / geolocation stripping)
  *   2. Video: duration check (≤30s), audio removal, frame extraction
  *   3. OCR on every frame/photo → contact-info regex detection
- *   4. Scene classification → indoor-only enforcement
- *   5. Landmark / outdoor location detection
+ *   4. Scene classification via AWS Rekognition → indoor-only enforcement
+ *   5. Landmark / outdoor location detection via Rekognition
  *
  * Dependencies:
  *   fluent-ffmpeg (ffmpeg + ffprobe wrappers)
  *   tesseract.js  (browser-less OCR)
  *   exif-parser   (EXIF/GPS metadata)
- *   @tensorflow/tfjs  (TF runtime — pure JS, no native build)
- *   @tensorflow-models/mobilenet (scene/object classification)
+ *   @aws-sdk/client-rekognition (cloud image analysis — scene + label detection)
  *   sharp (image resizing helper)
  */
 
@@ -25,7 +24,7 @@ const os = require('os');
 const crypto = require('crypto');
 
 // ── ALL heavy deps are lazy-loaded to avoid crashing the server on startup ──
-// tesseract.js, exif-parser, sharp, @tensorflow/tfjs, @tensorflow-models/mobilenet,
+// tesseract.js, exif-parser, sharp, @aws-sdk/client-rekognition,
 // fluent-ffmpeg, ffmpeg-static, ffprobe-static are required ONLY when actually called.
 
 /* ═══════════════════════════════════════════════════════════
@@ -52,27 +51,25 @@ function getFfmpeg() {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * TensorFlow + MobileNet — lazy singleton
+ * AWS Rekognition — cloud-based scene + label detection
+ * Uses the same AWS credentials already configured for S3.
  * ═══════════════════════════════════════════════════════════ */
-let mobilenetModel = null;
-let mobilenetUnavailable = false;
+let rekognitionClient = null;
 
-async function getMobileNet() {
-  if (mobilenetUnavailable) return null;
-  if (!mobilenetModel) {
-    try {
-      // Use pure-JS TF backend (no native build required)
-      require('@tensorflow/tfjs');
-      const mobilenet = require('@tensorflow-models/mobilenet');
-      mobilenetModel = await mobilenet.load({ version: 2, alpha: 1.0 });
-      console.log('[mediaModeration] MobileNet v2 loaded');
-    } catch (err) {
-      console.warn('[mediaModeration] MobileNet not available — scene classification will be skipped:', err.message);
-      mobilenetUnavailable = true;
-      return null;
-    }
+function getRekognition() {
+  if (!rekognitionClient) {
+    const { RekognitionClient } = require('@aws-sdk/client-rekognition');
+    const region = (process.env.REGION || process.env.AWS_REGION || 'us-east-1').trim();
+    rekognitionClient = new RekognitionClient({
+      region,
+      credentials: {
+        accessKeyId: (process.env.AWS_ACCESS_KEY_ID || '').trim(),
+        secretAccessKey: (process.env.AWS_SECRET_ACCESS_KEY || '').trim(),
+      },
+    });
+    console.log('[mediaModeration] AWS Rekognition client created — region:', region);
   }
-  return mobilenetModel;
+  return rekognitionClient;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -298,66 +295,60 @@ function detectContactInfo(text) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * 4. SCENE CLASSIFICATION — indoor vs outdoor
+ * 4. SCENE CLASSIFICATION — AWS Rekognition DetectLabels
+ *
+ * Sends the image bytes to Rekognition and checks the returned
+ * labels against outdoor / landmark / prohibited keyword lists.
  * ═══════════════════════════════════════════════════════════ */
 
-// Keywords in MobileNet class labels that indicate OUTDOOR scenes
-const OUTDOOR_KEYWORDS = [
-  'street', 'sidewalk', 'parking', 'park', 'garden', 'beach', 'mountain',
-  'cliff', 'ocean', 'lake', 'river', 'forest', 'desert', 'sky', 'skyline',
-  'bridge', 'dam', 'lighthouse', 'church', 'mosque', 'palace', 'castle',
-  'monument', 'fountain', 'crane', 'construction', 'roof', 'patio',
-  'terrace', 'balcony', 'lawn', 'field', 'stadium', 'amphitheatre',
-  'valley', 'volcano', 'waterfall', 'pier', 'dock', 'harbor', 'seashore',
-  'breakwater', 'promontory', 'alp', 'lakeshore', 'sandbar',
-  'barn', 'greenhouse', 'boathouse', 'mobile home', 'trailer',
-  'picket fence', 'stone wall', 'worm fence', 'chainlink fence',
-  'cab', 'taxi', 'limousine', 'minivan', 'ambulance', 'fire engine',
-  'police van', 'jeep', 'moving van', 'garbage truck', 'trailer truck',
-  'aircraft', 'airplane', 'airliner', 'airship', 'balloon', 'parachute',
-  'bicycle', 'tricycle', 'unicycle', 'rickshaw', 'oxcart',
-  'canoe', 'kayak', 'catamaran', 'sailboat', 'speedboat', 'gondola',
-  'drone', 'solar dish',
-];
+// Labels that mean the scene is OUTDOORS (case-insensitive match)
+const OUTDOOR_LABELS = new Set([
+  'outdoors', 'outdoor', 'nature', 'street', 'road', 'highway', 'sidewalk',
+  'parking lot', 'parking', 'park', 'garden', 'yard', 'lawn', 'field',
+  'beach', 'coast', 'shoreline', 'ocean', 'sea', 'lake', 'river', 'pond',
+  'waterfall', 'mountain', 'hill', 'cliff', 'valley', 'canyon', 'desert',
+  'forest', 'woods', 'jungle', 'countryside', 'farmland', 'farm',
+  'sky', 'cloud', 'sunset', 'sunrise', 'skyline', 'cityscape', 'city',
+  'building exterior', 'rooftop', 'terrace', 'patio', 'balcony', 'deck',
+  'bridge', 'pier', 'dock', 'harbor', 'marina', 'port', 'boardwalk',
+  'playground', 'stadium', 'arena', 'sports field', 'tennis court',
+  'golf course', 'swimming pool', 'pool', 'backyard', 'driveway',
+  'construction site', 'railway', 'train station', 'airport',
+  'vehicle', 'car', 'truck', 'bus', 'bicycle', 'motorcycle', 'boat',
+  'airplane', 'helicopter', 'train',
+  'tree', 'grass', 'flower', 'plant', 'vegetation', 'landscape',
+  'snow', 'rain', 'fog', 'weather',
+]);
 
-// Keywords indicating well-known LANDMARKS
-const LANDMARK_KEYWORDS = [
-  'obelisk', 'monument', 'triumphal arch', 'palace', 'castle',
-  'church', 'mosque', 'cathedral', 'stupa', 'pagoda', 'dome',
-  'beacon', 'lighthouse', 'megalith', 'totem',
-  'dam', 'suspension bridge', 'steel arch bridge', 'viaduct',
-  'tower', 'bell tower', 'clock tower',
-];
+// Labels that indicate recognisable LANDMARKS
+const LANDMARK_LABELS = new Set([
+  'landmark', 'monument', 'statue', 'sculpture', 'memorial',
+  'church', 'cathedral', 'mosque', 'temple', 'synagogue', 'chapel',
+  'castle', 'palace', 'fort', 'fortress', 'ruins',
+  'tower', 'clock tower', 'bell tower', 'skyscraper',
+  'lighthouse', 'obelisk', 'arch', 'triumphal arch',
+  'dome', 'pagoda', 'stupa', 'minaret',
+  'dam', 'aqueduct', 'colosseum', 'amphitheater',
+]);
 
-// Keywords indicating INDOOR-ALLOWED scenes
-const INDOOR_KEYWORDS = [
-  'stage', 'ballroom', 'banquet', 'hall', 'restaurant', 'dining',
-  'bar', 'lounge', 'library', 'studio', 'office', 'shop',
-  'showroom', 'theater', 'cinema', 'auditorium', 'gallery',
-  'room', 'suite', 'lobby', 'corridor', 'staircase', 'elevator',
-  'kitchen', 'bathroom', 'bedroom', 'living room', 'parlor',
-  'table', 'chair', 'desk', 'sofa', 'couch', 'candelabra',
-  'chandelier', 'lamp', 'curtain', 'pillow', 'quilt',
-  'vase', 'flower arrangement', 'plate', 'cup', 'wine glass',
-  'wine bottle', 'cocktail', 'goblet', 'tray', 'menu',
-  'spotlight', 'projector', 'screen', 'monitor',
-  'microphone', 'speaker', 'piano', 'organ', 'accordion',
-  'entertainment center', 'home theater',
-];
+// Labels that confirm indoor/venue context (when seen, reduce false positives)
+const INDOOR_LABELS = new Set([
+  'indoors', 'indoor', 'room', 'interior design', 'furniture',
+  'ballroom', 'banquet hall', 'restaurant', 'bar', 'lounge', 'lobby',
+  'stage', 'theater', 'cinema', 'auditorium', 'conference room',
+  'kitchen', 'bathroom', 'bedroom', 'living room', 'dining room',
+  'office', 'studio', 'gallery', 'showroom', 'shop', 'store',
+  'hallway', 'corridor', 'staircase', 'elevator',
+  'table', 'chair', 'sofa', 'couch', 'bed', 'desk',
+  'chandelier', 'lamp', 'curtain', 'carpet', 'rug',
+  'wine glass', 'plate', 'cup', 'menu', 'candle',
+]);
 
 /**
- * Classify a single image using MobileNet
- * Returns { isOutdoor, isLandmark, topPredictions, reasons }
+ * Classify a single image using AWS Rekognition DetectLabels
+ * Returns { isOutdoor, isLandmark, labels, reasons[] }
  */
 async function classifyImage(bufferOrPath) {
-  const model = await getMobileNet();
-  if (!model) {
-    // MobileNet unavailable — skip classification (graceful degradation)
-    return { isOutdoor: false, isLandmark: false, topPredictions: [], reasons: [] };
-  }
-  const tf = require('@tensorflow/tfjs');
-
-  // Load image into tensor
   let imgBuffer;
   if (Buffer.isBuffer(bufferOrPath)) {
     imgBuffer = bufferOrPath;
@@ -365,40 +356,90 @@ async function classifyImage(bufferOrPath) {
     imgBuffer = fs.readFileSync(bufferOrPath);
   }
 
-  // Decode to 3-channel RGB via sharp then to tensor
-  const sharp = require('sharp');
-  const { data, info } = await sharp(imgBuffer)
-    .resize(224, 224, { fit: 'cover' })
-    .removeAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
+  // Resize to ≤ 5MB for Rekognition (max inline image size)
+  if (imgBuffer.length > 5 * 1024 * 1024) {
+    try {
+      const sharp = require('sharp');
+      imgBuffer = await sharp(imgBuffer)
+        .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 80 })
+        .toBuffer();
+    } catch (err) {
+      console.warn('[classifyImage] sharp resize failed:', err.message);
+    }
+  }
 
-  const tensor = tf.tensor3d(data, [info.height, info.width, 3]);
-  const predictions = await model.classify(tensor);
-  tensor.dispose();
+  const { DetectLabelsCommand } = require('@aws-sdk/client-rekognition');
+  const client = getRekognition();
+
+  const response = await client.send(new DetectLabelsCommand({
+    Image: { Bytes: imgBuffer },
+    MaxLabels: 30,
+    MinConfidence: 40, // include lower-confidence labels to catch outdoor context
+  }));
+
+  const labels = (response.Labels || []).map(l => ({
+    name: l.Name,
+    confidence: l.Confidence,
+    parents: (l.Parents || []).map(p => p.Name),
+  }));
+
+  console.log('[classifyImage] Rekognition labels:', labels.map(l => `${l.name} (${l.confidence.toFixed(1)}%)`).join(', '));
 
   const reasons = [];
   let isOutdoor = false;
   let isLandmark = false;
+  let hasIndoorSignal = false;
 
-  for (const pred of predictions) {
-    const label = pred.className.toLowerCase();
-    const confidence = pred.probability;
+  // Flatten label names + parent names for matching
+  const allLabelNames = new Set();
+  for (const l of labels) {
+    allLabelNames.add(l.name.toLowerCase());
+    for (const p of l.parents) allLabelNames.add(p.toLowerCase());
+  }
 
-    // Check landmarks
-    if (LANDMARK_KEYWORDS.some(kw => label.includes(kw)) && confidence > 0.15) {
-      isLandmark = true;
-      reasons.push(`Landmark/identifiable location detected: "${pred.className}" (${(confidence * 100).toFixed(1)}%)`);
-    }
-
-    // Check outdoor scenes — block if confidence > 60%
-    if (OUTDOOR_KEYWORDS.some(kw => label.includes(kw)) && confidence > 0.60) {
-      isOutdoor = true;
-      reasons.push(`Outdoor scene detected: "${pred.className}" (${(confidence * 100).toFixed(1)}%)`);
+  // Check indoor signals first
+  for (const l of labels) {
+    const name = l.name.toLowerCase();
+    if (INDOOR_LABELS.has(name) && l.confidence >= 60) {
+      hasIndoorSignal = true;
+      break;
     }
   }
 
-  return { isOutdoor, isLandmark, topPredictions: predictions, reasons };
+  // Check for outdoor labels
+  for (const l of labels) {
+    const name = l.name.toLowerCase();
+    // Also check parent categories (e.g. "Oak Tree" has parent "Tree", "Outdoors")
+    const allNames = [name, ...l.parents.map(p => p.toLowerCase())];
+
+    for (const n of allNames) {
+      if (OUTDOOR_LABELS.has(n) && l.confidence >= 55) {
+        // If there's a strong indoor signal too, only block at higher confidence
+        if (hasIndoorSignal && l.confidence < 80) continue;
+        isOutdoor = true;
+        reasons.push(`Outdoor scene detected: "${l.name}" (${l.confidence.toFixed(0)}% confidence). Only interior/indoor venue photos are allowed.`);
+      }
+    }
+  }
+
+  // Check for landmarks
+  for (const l of labels) {
+    const name = l.name.toLowerCase();
+    const allNames = [name, ...l.parents.map(p => p.toLowerCase())];
+
+    for (const n of allNames) {
+      if (LANDMARK_LABELS.has(n) && l.confidence >= 50) {
+        isLandmark = true;
+        reasons.push(`Landmark/identifiable location detected: "${l.name}" (${l.confidence.toFixed(0)}% confidence). Landmark photos are not allowed.`);
+      }
+    }
+  }
+
+  // De-duplicate reasons (same label can match via name + parent)
+  const uniqueReasons = [...new Set(reasons)];
+
+  return { isOutdoor, isLandmark, labels, reasons: uniqueReasons };
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -498,12 +539,23 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
     }
 
     /* ── 3. Analyze each frame/photo ─────────────────────── */
-    const imagesToAnalyze = isVideo ? framePaths : [buffer]; // photos: analyze the buffer directly
+    const allImages = isVideo ? framePaths : [buffer];
 
-    for (let i = 0; i < imagesToAnalyze.length; i++) {
-      const imgSource = imagesToAnalyze[i];
+    // For videos, pick up to 5 evenly-spaced frames for Rekognition (API cost)
+    // OCR still runs on all frames since it is local (tesseract).
+    let classificationFrames;
+    if (isVideo && allImages.length > 5) {
+      const step = Math.floor(allImages.length / 5);
+      classificationFrames = [0, step, step * 2, step * 3, allImages.length - 1].map(i => allImages[i]);
+    } else {
+      classificationFrames = allImages;
+    }
+    const classificationSet = new Set(classificationFrames);
 
-      // 3a. OCR — detect text containing contact info
+    for (let i = 0; i < allImages.length; i++) {
+      const imgSource = allImages[i];
+
+      // 3a. OCR — detect text containing contact info (runs on every frame)
       try {
         const ocrText = await ocrImage(imgSource);
         if (ocrText.trim().length > 0) {
@@ -517,18 +569,20 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
         // Non-critical — continue
       }
 
-      // 3b. Scene classification — indoor/outdoor + landmark
-      try {
-        const classification = await classifyImage(imgSource);
-        if (classification.isOutdoor) {
-          reasons.push(...classification.reasons);
+      // 3b. Scene classification via Rekognition — sampled frames only
+      if (classificationSet.has(imgSource)) {
+        try {
+          const classification = await classifyImage(imgSource);
+          if (classification.isOutdoor) {
+            reasons.push(...classification.reasons);
+          }
+          if (classification.isLandmark) {
+            reasons.push(...classification.reasons.filter(r => r.includes('Landmark')));
+          }
+        } catch (err) {
+          console.error(`[mediaModeration] Classification error on ${isVideo ? `frame ${i + 1}` : 'image'}:`, err.message);
+          // Non-critical — continue
         }
-        if (classification.isLandmark) {
-          reasons.push(...classification.reasons.filter(r => r.includes('Landmark')));
-        }
-      } catch (err) {
-        console.error(`[mediaModeration] Classification error on ${isVideo ? `frame ${i + 1}` : 'image'}:`, err.message);
-        // Non-critical — continue
       }
 
       // If already enough reasons, break early (no need to check every frame)

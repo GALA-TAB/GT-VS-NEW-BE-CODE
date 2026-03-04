@@ -28,6 +28,7 @@
     ]
   },
   "dependencies": {
+    "@aws-sdk/client-rekognition": "^3.1001.0",
     "@aws-sdk/client-s3": "^3.775.0",
     "@aws-sdk/s3-request-presigner": "^3.772.0",
     "axios": "^1.8.3",
@@ -81,8 +82,6 @@
     "xss-clean": "^0.1.4"
   },
   "optionalDependencies": {
-    "@tensorflow-models/mobilenet": "^2.1.1",
-    "@tensorflow/tfjs": "^4.22.0",
     "ffmpeg-static": "^5.3.0",
     "ffprobe-static": "^3.1.0"
   },

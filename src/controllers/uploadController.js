@@ -277,9 +277,6 @@ const uploadImage = async (req, res, next) => {
  *   3. If approved → upload to S3, return { url, type, key }
  *   4. If rejected → return 400 with reasons
  * ═══════════════════════════════════════════════════════════════════════ */
-const REJECTION_MSG =
-  'Upload rejected. Media must only show interior venue spaces without contact information. Listings allow one 30-second video and up to 40 photos.';
-
 const uploadServiceMedia = async (req, res, next) => {
   try {
     // ── 1. Validate inputs ──────────────────────────────────
@@ -335,9 +332,16 @@ const uploadServiceMedia = async (req, res, next) => {
 
     if (!moderationResult.approved) {
       console.log('[uploadServiceMedia] REJECTED:', moderationResult.reasons);
+
+      // Build a user-facing message listing each specific detection
+      const detailLines = (moderationResult.reasons || []).map(r => `• ${r}`);
+      const userMessage = detailLines.length > 0
+        ? `Upload rejected — issues found:\n${detailLines.join('\n')}\nPlease choose a different photo.`
+        : 'Upload rejected. Media must only show interior venue spaces without contact information. Please choose a different photo.';
+
       return res.status(400).json({
         success: false,
-        message: REJECTION_MSG,
+        message: userMessage,
         reasons: moderationResult.reasons,
       });
     }
