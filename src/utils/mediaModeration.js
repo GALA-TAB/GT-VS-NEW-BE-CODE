@@ -428,18 +428,19 @@ const CONTACT_PATTERNS = [
  * and edges. This filters those out before running detection patterns.
  */
 function isLikelyRealText(text) {
-  if (!text || text.trim().length < 8) return false;
+  if (!text || text.trim().length < 10) return false;
 
   // Count words that resemble real English (3+ consecutive letters)
   const realWords = text.match(/[a-zA-Z]{3,}/g) || [];
 
-  // If there are at least 2 recognizable words, text is likely real
-  if (realWords.length >= 2) return true;
+  // Need at least 3 real words to consider it genuine text
+  // (patterns, textures, and edges often produce 1-2 spurious "words")
+  if (realWords.length >= 3) return true;
 
-  // Allow through even without English words if text has structured contact data:
-  // phone numbers, email addresses, or URLs (someone may photograph just a number)
+  // Allow through if text has clearly structured contact data
+  // (someone may photograph just a phone number or email)
   if (/\d{3}[-.\s)]+\d{3}[-.\s]+\d{4}/.test(text)) return true;
-  if (/\S+@\S+\.\S+/.test(text)) return true;
+  if (/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(text)) return true;
   if (/https?:\/\/|www\./i.test(text)) return true;
 
   return false;
@@ -506,21 +507,12 @@ function detectContactInfo(text) {
  * ═══════════════════════════════════════════════════════════ */
 
 const SIGN_PATTERNS = [
-  // Business type suffixes on signs: "XYZ Restaurant", "ABC Lounge LLC"
-  {
-    category: 'Storefront / business sign',
-    pattern: /\b[\w\s&']{2,30}\s+(?:restaurant|café|cafe|lounge|grill|bistro|diner|bakery|pizzeria|deli|pub|tavern|brewery|barbershop|laundry|cleaners|pharmacy|dental|hospital|hotel|motel|suites|resort|credit\s*union|realty|insurance|law\s*(?:firm|office)|attorney|accountant|tax|auto\s*(?:body|repair|shop|parts)|garage|tire|gas\s*station|hardware|lumber|florist|jewel(?:ry|ers?)|pawn|thrift|liquor|smoke\s*shop|vape|tattoo|beauty\s*supply)\b/gi,
-  },
-  {
-    category: 'Storefront / business sign',
-    pattern: /\b[\w\s&']{2,30}\s+(?:LLC|Inc\.?|Corp\.?|Ltd\.?|Co\.?|Company|Enterprises?|Group|Associates?|Partners?|Services?|Solutions?|Studio|Boutique|Emporium|Depot|Outlet|Market|Plaza|Center|Centre)\b/gi,
-  },
-  // "OPEN" signs — must include context (bare "open" is too common at events: open bar, open seating)
+  // "OPEN" signs — must include context (bare "open" is too common at events)
   {
     category: 'Storefront sign',
     pattern: /\b(?:now\s+open|open\s+(?:24\s*(?:hrs?|hours?)|daily|7\s*days))\b/gi,
   },
-  // Hours of operation
+  // Hours of operation (very specific — low false-positive rate)
   {
     category: 'Hours-of-operation sign',
     pattern: /\b(?:hours|open)\s*:\s*(?:mon|tue|wed|thu|fri|sat|sun|m|t|w|th|f|sa|su)[\s\S]{3,40}(?:am|pm|noon|midnight)\b/gi,
@@ -529,20 +521,15 @@ const SIGN_PATTERNS = [
     category: 'Hours-of-operation sign',
     pattern: /\b\d{1,2}\s*(?::\d{2})?\s*(?:am|pm)\s*[-–—to]+\s*\d{1,2}\s*(?::\d{2})?\s*(?:am|pm)\b/gi,
   },
-  // Street signs / road name patterns
+  // Street signs / road name patterns (requires full directional word prefix — not abbreviations)
   {
     category: 'Street sign',
-    pattern: /\b(?:north|south|east|west|n\.?|s\.?|e\.?|w\.?)\s+\d{0,5}(?:st|nd|rd|th)?\s*(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|hwy|highway|terr(?:ace)?|pike|trail|crossing|loop)\b/gi,
+    pattern: /\b(?:north|south|east|west)\s+\d{0,5}(?:st|nd|rd|th)?\s*(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|hwy|highway|terr(?:ace)?|pike|trail|crossing|loop)\b/gi,
   },
-  // "Exit" / highway signs
+  // Highway signs (very specific)
   {
     category: 'Highway / road sign',
-    pattern: /\b(?:exit|interstate|i-|us-|route|sr-|hwy)\s*\d{1,4}\b/gi,
-  },
-  // Landmark / monument plaques
-  {
-    category: 'Landmark plaque / monument',
-    pattern: /\b(?:national\s+(?:monument|park|historic)|historic\s+(?:site|landmark|district)|est(?:ablished)?\.?\s*\d{4}|founded\s+(?:in\s+)?\d{4}|registered\s+landmark|heritage\s+site|memorial)\b/gi,
+    pattern: /\b(?:interstate|i-\d{1,3}|us-\d{1,4}|route\s+\d{1,4}|exit\s+\d{1,4}[a-zA-Z]?)\b/gi,
   },
 ];
 
