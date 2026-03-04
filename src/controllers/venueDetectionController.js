@@ -15,7 +15,7 @@ const getOrCreateSettings = async () => {
 };
 
 /* ───────────────────────────────────────────────────────
- * GET  /api/venue-detection
+ * GET  /api/listing-detection
  * Return current detection settings (admin only)
  * ─────────────────────────────────────────────────────── */
 exports.getSettings = catchAsync(async (req, res) => {
@@ -24,7 +24,7 @@ exports.getSettings = catchAsync(async (req, res) => {
 });
 
 /* ───────────────────────────────────────────────────────
- * PATCH  /api/venue-detection
+ * PATCH  /api/listing-detection
  * Update detection settings (admin only)
  * Accepts partial or full nested objects
  * ─────────────────────────────────────────────────────── */
@@ -60,9 +60,9 @@ exports.updateSettings = catchAsync(async (req, res) => {
 });
 
 /* ───────────────────────────────────────────────────────
- * POST  /api/venue-detection/generate-title
+ * POST  /api/listing-detection/generate-title
  * AI / Template title generator for a listing
- * Body: { serviceListingId } or { venueType, neighborhood, city, amenities[] }
+ * Body: { serviceListingId } or { listingType, neighborhood, city, amenities[] }
  * ─────────────────────────────────────────────────────── */
 exports.generateTitle = catchAsync(async (req, res, next) => {
   const settings = await getOrCreateSettings();
@@ -79,14 +79,14 @@ exports.generateTitle = catchAsync(async (req, res, next) => {
       .populate('serviceTypeId', 'name')
       .populate('venuesAmenities', 'name');
 
-    if (!listing) return next(new AppError('Venue listing not found', 404));
+    if (!listing) return next(new AppError('Listing not found', 404));
 
-    venueType    = listing.serviceTypeId?.name || 'Venue';
+    venueType    = listing.serviceTypeId?.name || 'Listing';
     city         = listing.location?.city || '';
     neighborhood = listing.location?.state || '';
     amenities    = (listing.venuesAmenities || []).map((a) => a.name);
   } else {
-    venueType    = req.body.venueType || 'Venue';
+    venueType    = req.body.venueType || 'Listing';
     city         = req.body.city || '';
     neighborhood = req.body.neighborhood || '';
     amenities    = req.body.amenities || [];
@@ -133,13 +133,13 @@ exports.generateTitle = catchAsync(async (req, res, next) => {
 });
 
 /* ───────────────────────────────────────────────────────
- * GET  /api/venue-detection/masked-location/:listingId
+ * GET  /api/listing-detection/masked-location/:listingId
  * Return masked location data for pre-booking display
  * (Any authenticated user can request this)
  * ─────────────────────────────────────────────────────── */
 exports.getMaskedLocation = catchAsync(async (req, res, next) => {
   const listing = await ServiceListing.findById(req.params.listingId);
-  if (!listing) return next(new AppError('Venue listing not found', 404));
+  if (!listing) return next(new AppError('Listing not found', 404));
 
   const settings = await getOrCreateSettings();
   const mask = settings.locationMasking;
@@ -186,7 +186,7 @@ exports.getMaskedLocation = catchAsync(async (req, res, next) => {
 });
 
 /* ───────────────────────────────────────────────────────
- * GET  /api/venue-detection/stats
+ * GET  /api/listing-detection/stats
  * Quick overview: counts of listings, masked vs revealed
  * ─────────────────────────────────────────────────────── */
 exports.getStats = catchAsync(async (req, res) => {

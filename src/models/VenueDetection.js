@@ -1,9 +1,9 @@
 const mongoose = require('mongoose');
 
 /**
- * VenueDetection — singleton settings document
+ * ListingDetection — singleton settings document
  * Controls AI-driven listing protection, location masking,
- * title generation, and message filtering across ALL venue listings.
+ * title generation, and message filtering across ALL service listings.
  */
 const venueDetectionSchema = new mongoose.Schema(
   {
@@ -94,4 +94,4 @@ const venueDetectionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-module.exports = mongoose.model('VenueDetection', venueDetectionSchema);
+module.exports = mongoose.model('ListingDetection', venueDetectionSchema);
