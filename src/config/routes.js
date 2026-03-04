@@ -112,7 +112,7 @@ module.exports = (app) => {
   app.use('/api/suspension', suspensionRoute);
   app.use('/api/chat-violation', chatViolationRoute);
   app.use('/api/admin-note', adminNoteRoute);
-  app.use('/api/inbox-detection', venueDetectionRoute);
+  app.use('/api/listing-detection', venueDetectionRoute);
   otherRoutes(app);
 };
                                                                                       

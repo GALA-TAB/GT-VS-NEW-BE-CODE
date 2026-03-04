@@ -15,7 +15,7 @@ const getOrCreateSettings = async () => {
 };
 
 /* ───────────────────────────────────────────────────────
- * GET  /api/inbox-detection
+ * GET  /api/listing-detection
  * Return current detection settings (admin only)
  * ─────────────────────────────────────────────────────── */
 exports.getSettings = catchAsync(async (req, res) => {
@@ -24,7 +24,7 @@ exports.getSettings = catchAsync(async (req, res) => {
 });
 
 /* ───────────────────────────────────────────────────────
- * PATCH  /api/inbox-detection
+ * PATCH  /api/listing-detection
  * Update detection settings (admin only)
  * Accepts partial or full nested objects
  * ─────────────────────────────────────────────────────── */
@@ -60,7 +60,7 @@ exports.updateSettings = catchAsync(async (req, res) => {
 });
 
 /* ───────────────────────────────────────────────────────
- * POST  /api/inbox-detection/generate-title
+ * POST  /api/listing-detection/generate-title
  * AI / Template title generator for a listing
  * Body: { serviceListingId } or { listingType, neighborhood, city, amenities[] }
  * ─────────────────────────────────────────────────────── */
@@ -133,7 +133,7 @@ exports.generateTitle = catchAsync(async (req, res, next) => {
 });
 
 /* ───────────────────────────────────────────────────────
- * GET  /api/inbox-detection/masked-location/:listingId
+ * GET  /api/listing-detection/masked-location/:listingId
  * Return masked location data for pre-booking display
  * (Any authenticated user can request this)
  * ─────────────────────────────────────────────────────── */
@@ -186,7 +186,7 @@ exports.getMaskedLocation = catchAsync(async (req, res, next) => {
 });
 
 /* ───────────────────────────────────────────────────────
- * GET  /api/inbox-detection/stats
+ * GET  /api/listing-detection/stats
  * Quick overview: counts of listings, masked vs revealed
  * ─────────────────────────────────────────────────────── */
 exports.getStats = catchAsync(async (req, res) => {
