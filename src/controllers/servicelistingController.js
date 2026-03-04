@@ -1513,6 +1513,64 @@ const getServiceListing = catchAsync(async (req, res, next) => {
     },
     {
       $unwind: { path: '$serviceTypeData', preserveNullAndEmptyArrays: true }
+    },
+    // Lookup vendor profile info
+    {
+      $lookup: {
+        from: 'users',
+        localField: 'vendorId',
+        foreignField: '_id',
+        as: 'vendorProfile',
+        pipeline: [
+          {
+            $project: {
+              firstName: 1,
+              lastName: 1,
+              companyName: 1,
+              email: 1,
+              contact: 1,
+              countryCode: 1,
+              officeContact: 1,
+              officeCountryCode: 1,
+              profilePicture: 1,
+              country: 1,
+              state: 1,
+              city: 1,
+              mailingAddress: 1,
+            }
+          }
+        ]
+      }
+    },
+    {
+      $unwind: { path: '$vendorProfile', preserveNullAndEmptyArrays: true }
+    },
+    // Resolve vendor's country ObjectId to country name
+    {
+      $lookup: {
+        from: 'countries',
+        localField: 'vendorProfile.country',
+        foreignField: '_id',
+        as: 'vendorCountryData',
+        pipeline: [
+          { $project: { country: 1 } }
+        ]
+      }
+    },
+    {
+      $unwind: { path: '$vendorCountryData', preserveNullAndEmptyArrays: true }
+    },
+    {
+      $addFields: {
+        'vendorProfile.country': {
+          $ifNull: ['$vendorCountryData.country', '$vendorProfile.country']
+        }
+      }
+    },
+    {
+      $project: {
+        vendorCountryData: 0
+      }
     }
   ]);
 
