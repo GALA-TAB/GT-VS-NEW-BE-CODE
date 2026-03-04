@@ -229,63 +229,184 @@ async function ocrImage(bufferOrPath) {
   return text || '';
 }
 
+/* ── CATEGORY CONSTANTS (used in reasons so the frontend can distinguish) ─── */
+const CAT = {
+  PHONE:    'Phone number',
+  EMAIL:    'Email address',
+  SOCIAL:   'Social media handle / username',
+  LINK:     'Direct link / off-platform URL',
+  INVITE:   'Invite code / messaging link',
+  INTENT:   'Contact-intent phrase',
+  PAYMENT:  'Payment / money-transfer info',
+  CRYPTO:   'Cryptocurrency address / reference',
+  BANK:     'Bank / financial account info',
+  GIFT:     'Gift-card reference',
+  QR:       'QR code reference',
+  ADDRESS:  'Physical address',
+};
+
 /**
- * Regex patterns for detecting contact information in OCR text
+ * Comprehensive regex patterns for detecting contact / off-platform info.
+ *
+ * Each entry: { category, pattern, onCollapsed? }
+ *   - category  → one of CAT.* (used in the rejection reason)
+ *   - pattern   → RegExp (should use `g` and `i` where appropriate)
+ *   - onCollapsed → if true, also test against the spacing-collapsed variant
+ *
+ * ⚠️  ORDER MATTERS — more-specific patterns MUST come before general ones
+ *     so that "discord.gg/xxx" is flagged as INVITE, not SOCIAL;
+ *     "account number: 12345678901" is flagged as BANK, not PHONE; etc.
  */
 const CONTACT_PATTERNS = [
-  // Phone numbers — US + international
-  { name: 'phone number', pattern: /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g },
-  { name: 'phone number', pattern: /\+\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{2,4}[-.\s]?\d{2,4}/g },
-  { name: 'phone number', pattern: /\d{10,}/g },
 
-  // Email addresses
-  { name: 'email address', pattern: /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g },
-  { name: 'email address', pattern: /[a-zA-Z0-9._%+\-]+\s*(?:at|@)\s*[a-zA-Z0-9.\-]+\s*(?:dot|\.)\s*[a-zA-Z]{2,}/gi },
+  /* ═══ A. MOST-SPECIFIC (URLs / codes / addresses) ═══════════════════════ */
 
-  // URLs / links
-  { name: 'URL', pattern: /https?:\/\/[^\s<>"']+/gi },
-  { name: 'URL', pattern: /www\.[^\s<>"']+/gi },
-  { name: 'URL', pattern: /[a-zA-Z0-9\-]+\.(?:com|net|org|io|co|me|app|dev|xyz|info|biz)\b/gi },
+  /* ────────── 1. INVITE / MESSAGING LINKS  (before social & links) ──────── */
+  // Discord invite
+  { category: CAT.INVITE, pattern: /discord(?:\.gg|\.com\/invite|app\.com\/invite)\s*[/:]?\s*[\w\-]+/gi },
+  // Telegram link
+  { category: CAT.INVITE, pattern: /t\.me\/[\w\-]+/gi },
+  { category: CAT.INVITE, pattern: /telegram\.me\/[\w\-]+/gi },
+  // WhatsApp link
+  { category: CAT.INVITE, pattern: /wa\.me\/[\d+]+/gi },
+  { category: CAT.INVITE, pattern: /chat\.whatsapp\.com\/[\w]+/gi },
+  // Linktree
+  { category: CAT.INVITE, pattern: /linktr\.ee\/[\w.\-]+/gi },
+  // Signal group / number links
+  { category: CAT.INVITE, pattern: /signal\.(?:me|group)\/[\w#\-]+/gi },
 
-  // Social media handles
-  { name: 'social media handle', pattern: /(?:instagram|insta|ig|snap(?:chat)?|tik\s*tok|telegram|whats\s*app|discord|twitter|facebook|fb|linkedin)\s*[:@=]?\s*[@]?[\w.]{2,30}/gi },
-  { name: 'social media handle', pattern: /(?<!\w)@[a-zA-Z][\w.]{2,29}(?!\.\w{2,4}\b)/g },
+  /* ────────── 2. BANK / FINANCIAL DETAILS  (before phone — IBANs look like phone #s) */
+  // IBAN (2-letter country + 2 check digits + up to 30 alphanumeric)
+  { category: CAT.BANK, pattern: /\b[A-Z]{2}\d{2}\s?[\dA-Z]{4}\s?[\dA-Z]{4}\s?[\dA-Z]{4}(?:\s?[\dA-Z]{1,4}){0,5}\b/g },
+  // SWIFT / BIC
+  { category: CAT.BANK, pattern: /\b(?:swift|bic)\s*(?:code)?\s*:?\s*[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b/gi },
+  // Routing + account number patterns (keyword-gated → won't false-positive on random digits)
+  { category: CAT.BANK, pattern: /\b(?:routing|aba|transit)\s*(?:#|number|no\.?)?\s*:?\s*\d{9}\b/gi },
+  { category: CAT.BANK, pattern: /\b(?:account|acct)\s*(?:#|number|no\.?)?\s*:?\s*\d{8,17}\b/gi },
+  // Generic bank phrases
+  { category: CAT.BANK, pattern: /\b(?:bank\s+(?:details|info|account|transfer)|wire\s+(?:transfer|me)|direct\s+deposit|routing\s+number|account\s+number)\b/gi },
 
-  // Physical addresses
-  { name: 'physical address', pattern: /\b\d{1,5}\s+[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|dr(?:ive)?|rd|road|ln|lane|ct|court|way)\b/gi },
+  /* ────────── 3. CRYPTOCURRENCY  (before phone — long hex strings) ──────── */
+  // Bitcoin addresses (1…, 3…, bc1…)
+  { category: CAT.CRYPTO, pattern: /\b(?:1[a-km-zA-HJ-NP-Z1-9]{25,34}|3[a-km-zA-HJ-NP-Z1-9]{25,34}|bc1[a-zA-HJ-NP-Z0-9]{25,90})\b/g },
+  // Ethereum addresses (0x…)
+  { category: CAT.CRYPTO, pattern: /\b0x[a-fA-F0-9]{40}\b/g },
+  // Crypto keywords + nearby wallet/address-like text
+  { category: CAT.CRYPTO, pattern: /\b(?:btc|bitcoin|eth|ethereum|usdt|tether|usdc|crypto|wallet|blockchain|litecoin|ltc|doge|dogecoin|solana|sol|bnb|xrp|ada|cardano)\s*(?:address|wallet|:)?\s*[:=]?\s*[\w]{10,}/gi },
+  // "send crypto / send BTC / my wallet"
+  { category: CAT.CRYPTO, pattern: /\b(?:send|my|to)\s+(?:btc|bitcoin|eth|ethereum|crypto|usdt|usdc)\b/gi },
+  { category: CAT.CRYPTO, pattern: /\bmy\s+(?:crypto\s+)?wallet\b/gi },
 
-  // Payment instructions
-  { name: 'payment info', pattern: /(?:cash\s*app|venmo|zelle|paypal)\s*[:@$]?\s*[\w@$.]{0,30}/gi },
-  { name: 'payment info', pattern: /\$[a-zA-Z][\w]{1,20}/g },
+  /* ────────── 4. PAYMENT / MONEY TRANSFER  (before social — "Venmo @user") ─ */
+  // App names (CashApp, Venmo, Zelle, PayPal, Apple Pay, Google Pay, Samsung Pay)
+  { category: CAT.PAYMENT, pattern: /\b(?:cash\s*app|venmo|zelle|pay\s*pal|apple\s*pay|google\s*pay|samsung\s*pay|gpay)\b\s*[-:@$]?\s*[@$]?[\w@$.]{0,30}/gi },
+  // CashApp $cashtag
+  { category: CAT.PAYMENT, pattern: /\$[a-zA-Z][\w]{1,20}\b/g },
+  // Venmo / PayPal "send to @…"
+  { category: CAT.PAYMENT, pattern: /(?:send|pay|transfer|wire)\s+(?:(?:money|payment)\s+)?(?:to|via|through|on)\s+(?:cash\s*app|venmo|zelle|pay\s*pal|apple\s*pay|google\s*pay)\b/gi },
+  // "pay me" / "send deposit"
+  { category: CAT.PAYMENT, pattern: /\b(?:pay\s+me|send\s+(?:me\s+)?(?:a\s+)?(?:deposit|payment|money))\b/gi },
 
-  // QR code mention (textual hint — actual image QR detection would need a detector)
-  { name: 'QR code reference', pattern: /\bqr\s*code\b/gi },
-  { name: 'QR code reference', pattern: /\bscan\s+(?:this|the|my)\s+(?:code|qr)\b/gi },
+  /* ────────── 5. GIFT CARDS ────────── */
+  { category: CAT.GIFT, pattern: /\b(?:gift\s*card|e-?gift|prepaid\s*card)\b/gi },
+  { category: CAT.GIFT, pattern: /\b(?:amazon|itunes|apple|google\s*play|steam|visa|mastercard|amex|american\s*express|target|walmart|nike|sephora|nordstrom|best\s*buy|ebay|starbucks)\s+(?:gift\s*)?card\b/gi },
+  { category: CAT.GIFT, pattern: /\b(?:buy|send|get)\s+(?:me\s+)?(?:a\s+)?gift\s*card\b/gi },
+  // Redemption code pattern
+  { category: CAT.GIFT, pattern: /\b(?:redeem|redemption|promo|coupon)\s*(?:code)?\s*:?\s*[A-Z0-9\-]{8,25}\b/gi },
+
+  /* ═══ B. GENERAL CONTACT INFO ═══════════════════════════════════════════ */
+
+  /* ────────── 6. EMAIL ADDRESSES ────────── */
+  // Standard
+  { category: CAT.EMAIL, pattern: /[a-zA-Z0-9._%+\-]{2,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g },
+  // Obfuscated: "name at domain dot com"
+  { category: CAT.EMAIL, pattern: /[a-zA-Z0-9._%+\-]{2,}\s*(?:\bat\b|@)\s*[a-zA-Z0-9.\-]+\s*(?:\bdot\b|\.)\s*[a-zA-Z]{2,}/gi },
+  // Extra-obfuscated: "(at)" / "[at]" / "{at}"
+  { category: CAT.EMAIL, pattern: /[a-zA-Z0-9._%+\-]{2,}\s*[\[({]\s*at\s*[\])}]\s*[a-zA-Z0-9.\-]+\s*[\[({]\s*dot\s*[\])}]\s*[a-zA-Z]{2,}/gi },
+
+  /* ────────── 7. SOCIAL MEDIA HANDLES / USERNAMES ────────── */
+  // Platform name followed by a handle: "ig: @user", "snap user123", "tiktok - @user"
+  { category: CAT.SOCIAL, pattern: /(?:instagram|insta|ig|snap(?:chat)?|tik\s*tok|telegram|tele|whats?\s*app|discord|twitter|x\.com|facebook|fb|linked\s*in|threads|signal|wechat|line|kik|viber)\s*[-:@=|/\\]?\s*@?[\w.][\w.]{1,30}/gi },
+  // "my IG is @…" / "add me on snap …"
+  { category: CAT.SOCIAL, pattern: /(?:my|add\s+me\s+on|follow\s+(?:me\s+)?on|find\s+me\s+on|hit\s+me\s+(?:up\s+)?on|hmu\s+on)\s+(?:instagram|insta|ig|snap(?:chat)?|tik\s*tok|telegram|whats?\s*app|discord|twitter|x|facebook|fb|threads|signal|kik)\s*[-:@=]?\s*@?[\w.]{1,30}/gi },
+  // Bare @handle (3+ chars, not an email)
+  { category: CAT.SOCIAL, pattern: /(?<![a-zA-Z0-9._%+\-])@[a-zA-Z][\w.]{2,29}(?!@|\.[a-zA-Z]{2,4}\b)/g },
+
+  /* ────────── 8. PHONE NUMBERS  (last among contact — most general) ──────── */
+  // US: (123) 456-7890 / 123-456-7890 / 123.456.7890 / +1 …
+  { category: CAT.PHONE, pattern: /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g },
+  // International: +44 20 7946 0958, +91-98765-43210, etc.
+  { category: CAT.PHONE, pattern: /\+\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{2,4}[-.\s]?\d{2,4}[-.\s]?\d{0,4}/g },
+  // 10+ consecutive digits (catches spaced / dashed numbers after collapsing)
+  { category: CAT.PHONE, pattern: /\d{10,}/g, onCollapsed: true },
+  // Common text-evasion: "call / text / reach (me at) 555…"
+  { category: CAT.PHONE, pattern: /(?:call|text|reach|dial|ring|phone|cell|mobile|whatsapp|viber)\s*(?:me\s*)?(?:at|on|@|:)?\s*\+?\(?\d[\d\s()\-.]{6,}\d/gi },
+
+  /* ════ C. CONTEXT / INTENT SIGNALS ═════════════════════════════════════ */
+
+  /* ────────── 9. LINKS / URLs  (after social — bare domains are lower priority) */
+  // Standard URLs
+  { category: CAT.LINK, pattern: /https?:\/\/[^\s<>"']+/gi },
+  { category: CAT.LINK, pattern: /www\.[^\s<>"']+/gi },
+  // Bare domain with common TLDs
+  { category: CAT.LINK, pattern: /[a-zA-Z0-9][\w\-]*\.(?:com|net|org|io|co|me|app|dev|xyz|info|biz|us|uk|ca|au|de|fr|es|it|nl|ru|in|site|online|store|shop|link|page|bio|club|vip|pro|gg|tv|ly|gl|be)\b(?:\/[^\s<>"']*)?/gi },
+  // URL shorteners
+  { category: CAT.LINK, pattern: /(?:bit\.ly|tinyurl\.com|goo\.gl|t\.co|ow\.ly|is\.gd|buff\.ly|rb\.gy|cutt\.ly|shorturl\.at|tiny\.cc|surl\.li|s\.id)\b[^\s]*/gi },
+
+  /* ────────── 10. "TEXT ME / CALL ME / DM ME" INTENT ────────── */
+  { category: CAT.INTENT, pattern: /\b(?:text|call|ring|dial|dms?|direct\s*message|inbox|pm|private\s*message|message|msg|hit\s*(?:me\s*)?up|hmu|reach\s*(?:out)?|contact|get\s*(?:in\s*)?touch|slide\s*(?:in(?:to)?)?(?:\s*(?:my|the))?\s*(?:dms?|inbox))\s*(?:me|us)?\b/gi },
+  // "for bookings text …" / "for inquiries call …"
+  { category: CAT.INTENT, pattern: /\b(?:for\s+(?:bookings?|inquir(?:ies|y)|reservations?|appointments?|info|details?))\s+(?:text|call|dm|message|email|reach|contact)\b/gi },
+
+  /* ────────── 11. QR CODE REFERENCES ────────── */
+  { category: CAT.QR, pattern: /\bqr\s*code\b/gi },
+  { category: CAT.QR, pattern: /\bscan\s+(?:this|the|my)\s+(?:code|qr)\b/gi },
+
+  /* ────────── 12. PHYSICAL ADDRESSES ────────── */
+  { category: CAT.ADDRESS, pattern: /\b\d{1,5}\s+[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|hwy|highway)\b/gi },
 ];
 
 /**
- * Detect contact information in OCR text
+ * Detect contact / off-platform information in OCR text.
+ * Returns an array of user-facing reason strings, each prefixed with the
+ * detected category so the frontend can show exactly what was found.
  */
 function detectContactInfo(text) {
+  if (!text || text.trim().length < 3) return [];
+
   const reasons = [];
+  const seenCategories = new Set(); // at most one reason per category
+
   const normalized = normalizeNumberWords(text);
 
-  // Also collapse deliberate spacing: "5 5 5 1 2 3" → "555123"
-  const collapsed = normalized.replace(/\b(\d)\s+(?=\d\b)/g, '$1');
+  // Collapse deliberate spacing: "5 5 5  1 2 3 4" → "5551234"
+  const collapsed = normalized.replace(/(\d)\s+(?=\d)/g, '$1');
 
-  for (const { name, pattern } of CONTACT_PATTERNS) {
-    // Reset regex lastIndex
-    pattern.lastIndex = 0;
-    const sources = [text, normalized, collapsed];
-    for (const src of sources) {
-      const p = new RegExp(pattern.source, pattern.flags);
-      const match = src.match(p);
+  // Also strip common OCR noise / separators people exploit
+  const stripped = normalized
+    .replace(/[|\\/_\-–—•·⋅⏐│┃▏▎▍▌▋▊▉█]+/g, ' ')
+    .replace(/\s{2,}/g, ' ');
+
+  for (const { category, pattern, onCollapsed } of CONTACT_PATTERNS) {
+    if (seenCategories.has(category)) continue; // already flagged this category
+
+    // Build ordered list of text variants to test
+    const variants = [text, normalized, stripped];
+    if (onCollapsed) variants.push(collapsed);
+
+    for (const src of variants) {
+      // Fresh regex each time (avoids lastIndex issues with /g)
+      const re = new RegExp(pattern.source, pattern.flags);
+      const match = src.match(re);
       if (match && match.length > 0) {
-        reasons.push(`${name} detected in image text: "${match[0]}"`);
-        break; // one match per pattern is enough
+        const snippet = match[0].length > 40 ? match[0].slice(0, 37) + '…' : match[0];
+        reasons.push(`${category} detected: "${snippet}". This type of content is not allowed in listing photos.`);
+        seenCategories.add(category);
+        break; // move to next pattern
       }
     }
   }
+
   return reasons;
 }
 
