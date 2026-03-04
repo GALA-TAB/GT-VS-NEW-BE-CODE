@@ -55,14 +55,22 @@ function getFfmpeg() {
  * TensorFlow + MobileNet — lazy singleton
  * ═══════════════════════════════════════════════════════════ */
 let mobilenetModel = null;
+let mobilenetUnavailable = false;
 
 async function getMobileNet() {
+  if (mobilenetUnavailable) return null;
   if (!mobilenetModel) {
-    // Use pure-JS TF backend (no native build required)
-    require('@tensorflow/tfjs');
-    const mobilenet = require('@tensorflow-models/mobilenet');
-    mobilenetModel = await mobilenet.load({ version: 2, alpha: 1.0 });
-    console.log('[mediaModeration] MobileNet v2 loaded');
+    try {
+      // Use pure-JS TF backend (no native build required)
+      require('@tensorflow/tfjs');
+      const mobilenet = require('@tensorflow-models/mobilenet');
+      mobilenetModel = await mobilenet.load({ version: 2, alpha: 1.0 });
+      console.log('[mediaModeration] MobileNet v2 loaded');
+    } catch (err) {
+      console.warn('[mediaModeration] MobileNet not available — scene classification will be skipped:', err.message);
+      mobilenetUnavailable = true;
+      return null;
+    }
   }
   return mobilenetModel;
 }
@@ -343,7 +351,11 @@ const INDOOR_KEYWORDS = [
  */
 async function classifyImage(bufferOrPath) {
   const model = await getMobileNet();
-  const tf = require('@tensorflow/tfjs-node');
+  if (!model) {
+    // MobileNet unavailable — skip classification (graceful degradation)
+    return { isOutdoor: false, isLandmark: false, topPredictions: [], reasons: [] };
+  }
+  const tf = require('@tensorflow/tfjs');
 
   // Load image into tensor
   let imgBuffer;
