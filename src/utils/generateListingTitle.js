@@ -13,6 +13,9 @@ const VenueDetection = require('../models/VenueDetection');
 function buildFromTemplate(templateStr, vars) {
   let title = templateStr;
 
+  // Strip [Key Feature] from legacy templates stored in the database
+  title = title.replace(/\s*\+?\s*\[Key Feature\]\s*\+?\s*/gi, ' ');
+
   title = title.replace(/\[Adjective\]/gi, vars.adjective || '');
   title = title.replace(/\[Listing Type\]/gi, vars.listingType || '');
   title = title.replace(/\[Venue Type\]/gi, vars.listingType || '');
@@ -56,8 +59,18 @@ async function generateTitleForListing(listing, detectionSettings) {
   const styleDescriptors = settings.titleGeneration.styleDescriptors || [];
   if (styleDescriptors.length === 0) return null;
 
-  const templateFormat = settings.titleGeneration.titleFormat
+  let templateFormat = settings.titleGeneration.titleFormat
     || '[Adjective] + [Venue Type] + in/near + [Neighborhood]';
+
+  // Auto-fix legacy DB templates that still contain [Key Feature]
+  if (/\[Key Feature\]/i.test(templateFormat)) {
+    templateFormat = templateFormat.replace(/\s*\+?\s*\[Key Feature\]\s*\+?\s*/gi, ' + ').replace(/\+\s*\+/g, '+').replace(/^\s*\+|\+\s*$/g, '').trim();
+    // Persist the cleaned format back to the database
+    await VenueDetection.updateOne(
+      { _id: settings._id },
+      { 'titleGeneration.titleFormat': templateFormat }
+    );
+  }
 
   const listingType  = listing.serviceTypeId?.name || 'Space';
   const city         = listing.location?.city || '';
