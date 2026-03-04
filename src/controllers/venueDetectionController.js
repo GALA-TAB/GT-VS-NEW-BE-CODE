@@ -61,8 +61,80 @@ exports.updateSettings = catchAsync(async (req, res) => {
 /* ───────────────────────────────────────────────────────
  * POST  /api/listing-detection/generate-title
  * AI / Template title generator for a listing
- * Body: { serviceListingId } or { listingType, neighborhood, city, amenities[] }
+ * Body: { serviceListingId }
+ * Generates titles from listing title + description + template
+ * WITHOUT exposing address or original service title.
  * ─────────────────────────────────────────────────────── */
+
+/**
+ * Extract key features / descriptive words from a text string.
+ * Filters out common stop-words, addresses, and short tokens.
+ */
+const STOP_WORDS = new Set([
+  'the','a','an','and','or','but','is','are','was','were','be','been',
+  'being','have','has','had','do','does','did','will','would','shall',
+  'should','may','might','must','can','could','this','that','these',
+  'those','i','me','my','we','our','you','your','he','she','it','they',
+  'them','his','her','its','our','their','what','which','who','whom',
+  'where','when','how','not','no','nor','so','if','then','than','too',
+  'very','just','about','above','after','before','between','into','through',
+  'during','for','with','at','by','from','up','down','in','out','on','off',
+  'over','under','of','to','as','also','each','every','all','both','few',
+  'more','most','other','some','such','only','own','same','here','there',
+]);
+
+function extractKeyFeatures(text, maxFeatures = 5) {
+  if (!text) return [];
+  // Remove punctuation, split into words, filter
+  const words = text
+    .replace(/[^a-zA-Z\s]/g, ' ')
+    .split(/\s+/)
+    .map((w) => w.trim().toLowerCase())
+    .filter((w) => w.length > 3 && !STOP_WORDS.has(w));
+
+  // Frequency count — pick most common descriptive words
+  const freq = {};
+  words.forEach((w) => { freq[w] = (freq[w] || 0) + 1; });
+
+  return Object.entries(freq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, maxFeatures)
+    .map(([word]) => word.charAt(0).toUpperCase() + word.slice(1));
+}
+
+/**
+ * Build a title from the template format by substituting variables.
+ * Template example: "[Adjective] + [Listing Type] + in/near + [Neighborhood] + [Key Feature]"
+ */
+function buildFromTemplate(templateStr, vars) {
+  let title = templateStr;
+  // Replace each [Variable] token
+  title = title.replace(/\[Adjective\]/gi, vars.adjective || '');
+  title = title.replace(/\[Listing Type\]/gi, vars.listingType || '');
+  title = title.replace(/\[Venue Type\]/gi, vars.listingType || '');
+  title = title.replace(/\[Neighborhood\]/gi, vars.neighborhood || '');
+  title = title.replace(/\[City\]/gi, vars.city || '');
+  title = title.replace(/\[Key Feature\]/gi, vars.keyFeature || '');
+
+  // Handle "in/near" — use "in" when we have city, "near" for neighborhood-only
+  if (vars.neighborhood && vars.city) {
+    title = title.replace(/in\/near/gi, 'in');
+  } else if (vars.neighborhood) {
+    title = title.replace(/in\/near/gi, 'near');
+  } else if (vars.city) {
+    title = title.replace(/in\/near/gi, 'in');
+  } else {
+    title = title.replace(/in\/near\s*/gi, '');
+  }
+
+  // Clean up "+" separators and extra whitespace
+  title = title.replace(/\s*\+\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  // Remove trailing prepositions left by missing variables
+  title = title.replace(/\s+(in|near|with)\s*$/i, '').trim();
+
+  return title;
+}
+
 exports.generateTitle = catchAsync(async (req, res, next) => {
   const settings = await getOrCreateSettings();
 
@@ -70,63 +142,94 @@ exports.generateTitle = catchAsync(async (req, res, next) => {
     return next(new AppError('Title generation is currently disabled', 400));
   }
 
-  let venueType, neighborhood, city, amenities, styleDescriptors;
-  styleDescriptors = settings.titleGeneration.styleDescriptors;
-
-  if (req.body.serviceListingId) {
-    const listing = await ServiceListing.findById(req.body.serviceListingId)
-      .populate('serviceTypeId', 'name')
-      .populate('venuesAmenities', 'name');
-
-    if (!listing) return next(new AppError('Listing not found', 404));
-
-    venueType    = listing.serviceTypeId?.name || 'Listing';
-    city         = listing.location?.city || '';
-    neighborhood = listing.location?.state || '';
-    amenities    = (listing.venuesAmenities || []).map((a) => a.name);
-  } else {
-    venueType    = req.body.venueType || 'Listing';
-    city         = req.body.city || '';
-    neighborhood = req.body.neighborhood || '';
-    amenities    = req.body.amenities || [];
+  if (!req.body.serviceListingId) {
+    return next(new AppError('Please provide a serviceListingId', 400));
   }
 
-  // Pick a random style descriptor
-  const adjective =
-    styleDescriptors[Math.floor(Math.random() * styleDescriptors.length)];
+  const listing = await ServiceListing.findById(req.body.serviceListingId)
+    .populate('serviceTypeId', 'name')
+    .populate('venuesAmenities', 'name');
 
-  // Pick a key feature from amenities if available
-  const keyFeature =
-    amenities.length > 0
-      ? amenities[Math.floor(Math.random() * amenities.length)]
-      : '';
+  if (!listing) return next(new AppError('Listing not found', 404));
 
-  // Build title options
-  const locationPart = neighborhood && city
-    ? `in ${neighborhood}, ${city}`
-    : city
-    ? `in ${city}`
-    : neighborhood
-    ? `near ${neighborhood}`
-    : '';
+  const styleDescriptors = settings.titleGeneration.styleDescriptors || [];
+  const templateFormat = settings.titleGeneration.titleFormat
+    || '[Adjective] + [Listing Type] + in/near + [Neighborhood] + [Key Feature]';
 
-  const titles = [
-    `${adjective} ${venueType} ${locationPart}`.trim(),
-    keyFeature
-      ? `${adjective} ${venueType} with ${keyFeature} ${locationPart}`.trim()
-      : null,
-    keyFeature
-      ? `${venueType} ${locationPart} — ${keyFeature}`.trim()
-      : null,
-    `${venueType} ${locationPart}`.trim(),
+  // ── Extract info from listing (NOT the address or original title) ──
+  const listingType = listing.serviceTypeId?.name || 'Space';
+  const city         = listing.location?.city || '';
+  const neighborhood = listing.location?.state || '';
+  const amenityNames = (listing.venuesAmenities || []).map((a) => a.name);
+
+  // Extract key features from the listing description
+  const descriptionFeatures = extractKeyFeatures(listing.description || '');
+
+  // Merge amenities + description features for key feature pool
+  const featurePool = [
+    ...amenityNames,
+    ...descriptionFeatures,
   ].filter(Boolean);
+
+  // ── Generate multiple title suggestions ──
+  const shuffle = (arr) => [...arr].sort(() => Math.random() - 0.5);
+  const shuffledDescriptors = shuffle(styleDescriptors);
+  const shuffledFeatures = shuffle(featurePool);
+
+  const titles = [];
+  const usedSet = new Set();
+
+  // Generate titles using template, different descriptor + feature combos
+  for (let i = 0; i < Math.min(4, Math.max(1, shuffledDescriptors.length)); i++) {
+    const adjective = shuffledDescriptors[i] || shuffledDescriptors[0] || '';
+    const keyFeature = shuffledFeatures[i] || shuffledFeatures[0] || '';
+
+    const title = buildFromTemplate(templateFormat, {
+      adjective,
+      listingType,
+      neighborhood,
+      city,
+      keyFeature,
+    });
+
+    if (title && !usedSet.has(title)) {
+      usedSet.add(title);
+      titles.push(title);
+    }
+  }
+
+  // Add one variation without a key feature
+  if (shuffledDescriptors.length > 0) {
+    const basic = buildFromTemplate(templateFormat, {
+      adjective: shuffledDescriptors[0],
+      listingType,
+      neighborhood,
+      city,
+      keyFeature: '',
+    });
+    if (basic && !usedSet.has(basic)) {
+      usedSet.add(basic);
+      titles.push(basic);
+    }
+  }
 
   res.status(200).json({
     status: 'success',
     data: {
       suggestions: titles,
-      selectedTitle: titles[0],
-      metadata: { adjective, venueType, locationPart, keyFeature },
+      selectedTitle: titles[0] || '',
+      metadata: {
+        listingType,
+        neighborhood,
+        city,
+        featuresExtracted: featurePool.slice(0, 8),
+        templateUsed: templateFormat,
+        descriptorCount: styleDescriptors.length,
+      },
+      sourceInfo: {
+        originalTitle: listing.title || '',
+        hasDescription: !!(listing.description),
+      },
     },
   });
 });
