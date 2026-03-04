@@ -32,7 +32,6 @@ exports.updateSettings = catchAsync(async (req, res) => {
   const allowed = [
     'locationMasking',
     'titleGeneration',
-    'titleControl',
     'messageFiltering',
     'preBookingVisibility',
     'postBookingReveal',

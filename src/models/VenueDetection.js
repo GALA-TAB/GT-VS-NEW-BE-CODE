@@ -37,14 +37,6 @@ const venueDetectionSchema = new mongoose.Schema(
       },
     },
 
-    /* ── Venue Owner Titles vs System Titles ─────────────────────── */
-    titleControl: {
-      systemCanOverride:       { type: Boolean, default: false },
-      systemCanReorder:        { type: Boolean, default: true },
-      removeLocationSpecifics: { type: Boolean, default: true },
-      appendNeighborhood:      { type: Boolean, default: true },
-    },
-
     /* ── Message / Chat Filtering ──────────────────────────────── */
     messageFiltering: {
       enabled:                  { type: Boolean, default: true },
