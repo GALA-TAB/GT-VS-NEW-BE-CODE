@@ -7,15 +7,13 @@
  *   1. Metadata inspection (GPS / geolocation stripping)
  *   2. Video: duration check (≤30s), audio removal, frame extraction
  *   3. OCR on every frame/photo → contact-info regex detection
- *   4. Scene classification via AWS Rekognition → indoor-only enforcement
- *   5. Landmark / outdoor location detection via Rekognition
+ *   4. Scene classification via local colour analysis (sharp) → indoor-only enforcement
  *
  * Dependencies:
  *   fluent-ffmpeg (ffmpeg + ffprobe wrappers)
  *   tesseract.js  (browser-less OCR)
  *   exif-parser   (EXIF/GPS metadata)
- *   @aws-sdk/client-rekognition (cloud image analysis — scene + label detection)
- *   sharp (image resizing helper)
+ *   sharp         (image resizing + raw pixel analysis for scene detection)
  */
 
 const path = require('path');
@@ -24,8 +22,8 @@ const os = require('os');
 const crypto = require('crypto');
 
 // ── ALL heavy deps are lazy-loaded to avoid crashing the server on startup ──
-// tesseract.js, exif-parser, sharp, @aws-sdk/client-rekognition,
-// fluent-ffmpeg, ffmpeg-static, ffprobe-static are required ONLY when actually called.
+// tesseract.js, exif-parser, sharp, fluent-ffmpeg, ffmpeg-static, ffprobe-static
+// are required ONLY when actually called.
 
 /* ═══════════════════════════════════════════════════════════
  * ffmpeg / ffprobe — lazy loaded, with PATH auto-detection
@@ -51,25 +49,22 @@ function getFfmpeg() {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * AWS Rekognition — cloud-based scene + label detection
- * Uses the same AWS credentials already configured for S3.
+ * RGB → HSL conversion helper (used by local scene analysis)
  * ═══════════════════════════════════════════════════════════ */
-let rekognitionClient = null;
-
-function getRekognition() {
-  if (!rekognitionClient) {
-    const { RekognitionClient } = require('@aws-sdk/client-rekognition');
-    const region = (process.env.REGION || process.env.AWS_REGION || 'us-east-1').trim();
-    rekognitionClient = new RekognitionClient({
-      region,
-      credentials: {
-        accessKeyId: (process.env.AWS_ACCESS_KEY_ID || '').trim(),
-        secretAccessKey: (process.env.AWS_SECRET_ACCESS_KEY || '').trim(),
-      },
-    });
-    console.log('[mediaModeration] AWS Rekognition client created — region:', region);
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h, s, l = (max + min) / 2;
+  if (max === min) {
+    h = s = 0;
+  } else {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+    else if (max === g) h = ((b - r) / d + 2) / 6;
+    else h = ((r - g) / d + 4) / 6;
   }
-  return rekognitionClient;
+  return { h: h * 360, s, l };
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -295,58 +290,21 @@ function detectContactInfo(text) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * 4. SCENE CLASSIFICATION — AWS Rekognition DetectLabels
+ * 4. SCENE CLASSIFICATION — Local color / hue analysis via sharp
  *
- * Sends the image bytes to Rekognition and checks the returned
- * labels against outdoor / landmark / prohibited keyword lists.
+ * Analyses pixel colors in different image regions to detect:
+ *   - Blue sky in the top third of the image
+ *   - Green vegetation anywhere in the image
+ *   - Natural lighting patterns (high brightness + high variance)
+ *   - Sunset / sunrise warm-hue skies
+ *   - Combined sky + vegetation signals
+ *
+ * Returns { isOutdoor, isLandmark, labels, reasons[] }
  * ═══════════════════════════════════════════════════════════ */
 
-// Labels that mean the scene is OUTDOORS (case-insensitive match)
-const OUTDOOR_LABELS = new Set([
-  'outdoors', 'outdoor', 'nature', 'street', 'road', 'highway', 'sidewalk',
-  'parking lot', 'parking', 'park', 'garden', 'yard', 'lawn', 'field',
-  'beach', 'coast', 'shoreline', 'ocean', 'sea', 'lake', 'river', 'pond',
-  'waterfall', 'mountain', 'hill', 'cliff', 'valley', 'canyon', 'desert',
-  'forest', 'woods', 'jungle', 'countryside', 'farmland', 'farm',
-  'sky', 'cloud', 'sunset', 'sunrise', 'skyline', 'cityscape', 'city',
-  'building exterior', 'rooftop', 'terrace', 'patio', 'balcony', 'deck',
-  'bridge', 'pier', 'dock', 'harbor', 'marina', 'port', 'boardwalk',
-  'playground', 'stadium', 'arena', 'sports field', 'tennis court',
-  'golf course', 'swimming pool', 'pool', 'backyard', 'driveway',
-  'construction site', 'railway', 'train station', 'airport',
-  'vehicle', 'car', 'truck', 'bus', 'bicycle', 'motorcycle', 'boat',
-  'airplane', 'helicopter', 'train',
-  'tree', 'grass', 'flower', 'plant', 'vegetation', 'landscape',
-  'snow', 'rain', 'fog', 'weather',
-]);
-
-// Labels that indicate recognisable LANDMARKS
-const LANDMARK_LABELS = new Set([
-  'landmark', 'monument', 'statue', 'sculpture', 'memorial',
-  'church', 'cathedral', 'mosque', 'temple', 'synagogue', 'chapel',
-  'castle', 'palace', 'fort', 'fortress', 'ruins',
-  'tower', 'clock tower', 'bell tower', 'skyscraper',
-  'lighthouse', 'obelisk', 'arch', 'triumphal arch',
-  'dome', 'pagoda', 'stupa', 'minaret',
-  'dam', 'aqueduct', 'colosseum', 'amphitheater',
-]);
-
-// Labels that confirm indoor/venue context (when seen, reduce false positives)
-const INDOOR_LABELS = new Set([
-  'indoors', 'indoor', 'room', 'interior design', 'furniture',
-  'ballroom', 'banquet hall', 'restaurant', 'bar', 'lounge', 'lobby',
-  'stage', 'theater', 'cinema', 'auditorium', 'conference room',
-  'kitchen', 'bathroom', 'bedroom', 'living room', 'dining room',
-  'office', 'studio', 'gallery', 'showroom', 'shop', 'store',
-  'hallway', 'corridor', 'staircase', 'elevator',
-  'table', 'chair', 'sofa', 'couch', 'bed', 'desk',
-  'chandelier', 'lamp', 'curtain', 'carpet', 'rug',
-  'wine glass', 'plate', 'cup', 'menu', 'candle',
-]);
-
 /**
- * Classify a single image using AWS Rekognition DetectLabels
- * Returns { isOutdoor, isLandmark, labels, reasons[] }
+ * Classify a single image using local pixel-level colour analysis (sharp).
+ * No cloud APIs required — runs entirely on-server.
  */
 async function classifyImage(bufferOrPath) {
   let imgBuffer;
@@ -356,90 +314,167 @@ async function classifyImage(bufferOrPath) {
     imgBuffer = fs.readFileSync(bufferOrPath);
   }
 
-  // Resize to ≤ 5MB for Rekognition (max inline image size)
-  if (imgBuffer.length > 5 * 1024 * 1024) {
-    try {
-      const sharp = require('sharp');
-      imgBuffer = await sharp(imgBuffer)
-        .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 80 })
-        .toBuffer();
-    } catch (err) {
-      console.warn('[classifyImage] sharp resize failed:', err.message);
+  const sharp = require('sharp');
+
+  // Resize to small fixed size for fast analysis (preserves colour ratios)
+  const SIZE = 150;
+  const { data, info } = await sharp(imgBuffer)
+    .resize(SIZE, SIZE, { fit: 'fill' })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const { width, height, channels } = info;
+  const totalPixels = width * height;
+
+  // Divide image into horizontal thirds
+  const topEnd = Math.floor(height / 3);
+  const midEnd = Math.floor((2 * height) / 3);
+
+  // ── Accumulators ──
+  let skyPixels = 0;
+  let greenPixelsAll = 0;
+  let topPixelCount = 0;
+  let bottomGreenCount = 0;
+  let bottomPixelCount = 0;
+  let totalBrightness = 0;
+  let saturationSum = 0;
+  const brightnessValues = [];
+  const hueHistogram = new Array(36).fill(0); // 10-degree bins
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * channels;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      const brightness = (r + g + b) / 3;
+      totalBrightness += brightness;
+      brightnessValues.push(brightness);
+
+      const { h, s, l } = rgbToHsl(r, g, b);
+      saturationSum += s;
+
+      // Hue histogram (only count chromatic pixels)
+      if (s > 0.1) {
+        hueHistogram[Math.floor(h / 10) % 36]++;
+      }
+
+      /* ── TOP THIRD — sky detection ─────────────────────── */
+      if (y < topEnd) {
+        topPixelCount++;
+        // Blue sky: hue 190-250, moderate+ saturation, medium-high lightness
+        if (h >= 190 && h <= 250 && s > 0.2 && l > 0.3 && l < 0.85) {
+          skyPixels++;
+        }
+        // Bright overcast / hazy sky: very bright, nearly achromatic
+        else if (l > 0.75 && s < 0.15 && brightness > 190) {
+          skyPixels++;
+        }
+        // Sunset / sunrise: warm hue, vivid, in upper portion
+        else if ((h <= 40 || h >= 330) && s > 0.4 && l > 0.4) {
+          skyPixels++;
+        }
+      }
+
+      /* ── BOTTOM THIRD — ground / vegetation ────────────── */
+      if (y >= midEnd) {
+        bottomPixelCount++;
+        if (h >= 80 && h <= 160 && s > 0.15 && l > 0.1 && l < 0.85) {
+          bottomGreenCount++;
+        }
+      }
+
+      /* ── ALL REGIONS — vegetation ──────────────────────── */
+      if (h >= 80 && h <= 160 && s > 0.15 && l > 0.1 && l < 0.85) {
+        greenPixelsAll++;
+      }
     }
   }
 
-  const { DetectLabelsCommand } = require('@aws-sdk/client-rekognition');
-  const client = getRekognition();
+  // ── Derived metrics ──
+  const avgBrightness = totalBrightness / totalPixels;
+  const avgSaturation = saturationSum / totalPixels;
+  const brightnessVariance =
+    brightnessValues.reduce((sum, bv) => sum + (bv - avgBrightness) ** 2, 0) / totalPixels;
+  const brightnessStdDev = Math.sqrt(brightnessVariance);
+  const significantHueBins = hueHistogram.filter(c => c > totalPixels * 0.02).length;
 
-  const response = await client.send(new DetectLabelsCommand({
-    Image: { Bytes: imgBuffer },
-    MaxLabels: 30,
-    MinConfidence: 40, // include lower-confidence labels to catch outdoor context
-  }));
+  const skyRatio = topPixelCount > 0 ? skyPixels / topPixelCount : 0;
+  const greenRatio = greenPixelsAll / totalPixels;
+  const bottomGreenRatio = bottomPixelCount > 0 ? bottomGreenCount / bottomPixelCount : 0;
 
-  const labels = (response.Labels || []).map(l => ({
-    name: l.Name,
-    confidence: l.Confidence,
-    parents: (l.Parents || []).map(p => p.Name),
-  }));
+  // ── Scoring ──
+  let outdoorScore = 0;
+  const signals = [];
 
-  console.log('[classifyImage] Rekognition labels:', labels.map(l => `${l.name} (${l.confidence.toFixed(1)}%)`).join(', '));
+  // Sky presence
+  if (skyRatio > 0.35) {
+    outdoorScore += 40;
+    signals.push(`sky detected in upper portion (${(skyRatio * 100).toFixed(0)}%)`);
+  } else if (skyRatio > 0.20) {
+    outdoorScore += 25;
+    signals.push(`possible sky in upper portion (${(skyRatio * 100).toFixed(0)}%)`);
+  }
 
+  // Vegetation / greenery
+  if (greenRatio > 0.25) {
+    outdoorScore += 35;
+    signals.push(`vegetation/greenery detected (${(greenRatio * 100).toFixed(0)}% of image)`);
+  } else if (greenRatio > 0.12) {
+    outdoorScore += 20;
+    signals.push(`some vegetation detected (${(greenRatio * 100).toFixed(0)}% of image)`);
+  }
+
+  // Natural lighting pattern (bright with high variance → sun + shadows)
+  if (avgBrightness > 140 && brightnessStdDev > 60) {
+    outdoorScore += 15;
+    signals.push('natural lighting pattern detected');
+  }
+
+  // High colour diversity + moderate saturation
+  if (significantHueBins > 10 && avgSaturation > 0.2) {
+    outdoorScore += 10;
+    signals.push('high colour diversity');
+  }
+
+  // Sky + vegetation combination is a very strong outdoor indicator
+  if (skyRatio > 0.20 && greenRatio > 0.10) {
+    outdoorScore += 15;
+    signals.push('sky and vegetation combination');
+  }
+
+  // ── Indoor counter-indicators (reduce score) ──
+  if (avgBrightness < 100 && brightnessStdDev < 40) {
+    outdoorScore -= 20; // Dim, uniform lighting → likely indoor
+  }
+  if (avgSaturation < 0.1) {
+    outdoorScore -= 10; // Very desaturated → artificial light
+  }
+
+  const isOutdoor = outdoorScore >= 45;
   const reasons = [];
-  let isOutdoor = false;
-  let isLandmark = false;
-  let hasIndoorSignal = false;
 
-  // Flatten label names + parent names for matching
-  const allLabelNames = new Set();
-  for (const l of labels) {
-    allLabelNames.add(l.name.toLowerCase());
-    for (const p of l.parents) allLabelNames.add(p.toLowerCase());
+  if (isOutdoor) {
+    const topSignals = signals.slice(0, 3).join(', ');
+    reasons.push(
+      `Outdoor scene detected (${topSignals}). Only interior/indoor venue photos are allowed for service listings.`
+    );
   }
 
-  // Check indoor signals first
-  for (const l of labels) {
-    const name = l.name.toLowerCase();
-    if (INDOOR_LABELS.has(name) && l.confidence >= 60) {
-      hasIndoorSignal = true;
-      break;
-    }
-  }
+  console.log(
+    `[classifyImage] Score: ${outdoorScore}, Sky: ${(skyRatio * 100).toFixed(1)}%, ` +
+    `Green: ${(greenRatio * 100).toFixed(1)}%, Brightness: ${avgBrightness.toFixed(0)} ± ${brightnessStdDev.toFixed(0)}, ` +
+    `Sat: ${avgSaturation.toFixed(2)}, Hue bins: ${significantHueBins}, Outdoor: ${isOutdoor}, ` +
+    `Signals: [${signals.join(', ')}]`
+  );
 
-  // Check for outdoor labels
-  for (const l of labels) {
-    const name = l.name.toLowerCase();
-    // Also check parent categories (e.g. "Oak Tree" has parent "Tree", "Outdoors")
-    const allNames = [name, ...l.parents.map(p => p.toLowerCase())];
-
-    for (const n of allNames) {
-      if (OUTDOOR_LABELS.has(n) && l.confidence >= 55) {
-        // If there's a strong indoor signal too, only block at higher confidence
-        if (hasIndoorSignal && l.confidence < 80) continue;
-        isOutdoor = true;
-        reasons.push(`Outdoor scene detected: "${l.name}" (${l.confidence.toFixed(0)}% confidence). Only interior/indoor venue photos are allowed.`);
-      }
-    }
-  }
-
-  // Check for landmarks
-  for (const l of labels) {
-    const name = l.name.toLowerCase();
-    const allNames = [name, ...l.parents.map(p => p.toLowerCase())];
-
-    for (const n of allNames) {
-      if (LANDMARK_LABELS.has(n) && l.confidence >= 50) {
-        isLandmark = true;
-        reasons.push(`Landmark/identifiable location detected: "${l.name}" (${l.confidence.toFixed(0)}% confidence). Landmark photos are not allowed.`);
-      }
-    }
-  }
-
-  // De-duplicate reasons (same label can match via name + parent)
-  const uniqueReasons = [...new Set(reasons)];
-
-  return { isOutdoor, isLandmark, labels, reasons: uniqueReasons };
+  return {
+    isOutdoor,
+    isLandmark: false, // local analysis cannot detect specific landmarks
+    labels: signals.map(s => ({ name: s, confidence: 0, parents: [] })),
+    reasons,
+  };
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -541,8 +576,8 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
     /* ── 3. Analyze each frame/photo ─────────────────────── */
     const allImages = isVideo ? framePaths : [buffer];
 
-    // For videos, pick up to 5 evenly-spaced frames for Rekognition (API cost)
-    // OCR still runs on all frames since it is local (tesseract).
+    // For videos, pick up to 5 evenly-spaced frames for classification (perf)
+    // OCR still runs on all frames since tesseract is local.
     let classificationFrames;
     if (isVideo && allImages.length > 5) {
       const step = Math.floor(allImages.length / 5);
@@ -569,8 +604,8 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
         // Non-critical — continue
       }
 
-      // 3b. Scene classification via Rekognition — sampled frames only
-      // FAIL-CLOSED: if Rekognition errors out, reject the upload rather than
+      // 3b. Scene classification via local colour analysis — sampled frames only
+      // FAIL-CLOSED: if classification errors out, reject the upload rather than
       // silently letting unscreened media through.
       if (classificationSet.has(imgSource)) {
         try {
