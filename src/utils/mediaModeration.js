@@ -6,7 +6,8 @@
  * Pipeline:
  *   1. Metadata inspection (GPS / geolocation stripping)
  *   2. Video: duration check (≤30s), audio removal, frame extraction
- *   3. OCR on every frame/photo → contact-info + sign/storefront detection
+ *   3. OCR on VIDEO FRAMES ONLY → contact-info + sign detection
+ *      (Photos skip OCR entirely for speed + zero false positives)
  *
  * Dependencies:
  *   fluent-ffmpeg (ffmpeg + ffprobe wrappers)
@@ -192,16 +193,12 @@ function normalizeNumberWords(text) {
 /**
  * Run OCR on an image buffer with preprocessing for better accuracy.
  *
- * Tesseract performs poorly on raw photographs. We preprocess with sharp:
- *   1. Upscale small images (Tesseract needs ~300 DPI equivalent)
- *   2. Grayscale conversion (removes colour noise)
- *   3. Normalize contrast (stretch histogram to full 0-255)
- *   4. Sharpen (helps with phone-camera blur)
- *   5. Threshold to high-contrast black/white (isolates text from backgrounds)
+ * OCR is used ONLY for video frames (not photos) to avoid slow uploads
+ * and false positives from Tesseract reading noise in regular photographs.
  *
- * We run OCR on MULTIPLE preprocessed variants because different thresholds /
- * inversions pick up text on different background colours (white text on dark
- * vs dark text on light). Results are merged.
+ * Preprocessing with sharp:
+ *   1. Resize to 800px (small = fast)
+ *   2. Grayscale + normalize + sharpen + threshold (single variant)
  */
 let ocrWorker = null;
 
@@ -229,62 +226,34 @@ async function ocrImage(bufferOrPath) {
   const metadata = await sharp(imgBuffer).metadata();
   const minDim = Math.min(metadata.width || 0, metadata.height || 0);
 
-  // Upscale factor — aim for at least 1500px on shortest side (Tesseract sweet spot)
-  const scale = minDim > 0 && minDim < 1500 ? Math.ceil(1500 / minDim) : 1;
-  const targetW = Math.min((metadata.width || 1500) * scale, 4000);
-  const targetH = Math.min((metadata.height || 1500) * scale, 4000);
+  // Aim for 800px on shortest side — fast + sufficient for real text
+  const scale = minDim > 0 && minDim < 800 ? Math.ceil(800 / minDim) : 1;
+  const targetW = Math.min((metadata.width || 800) * scale, 2000);
+  const targetH = Math.min((metadata.height || 800) * scale, 2000);
 
-  // ── Variant A: standard (dark text on light background) ──
-  const variantA = await sharp(imgBuffer)
-    .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
-    .grayscale()
-    .normalize()            // stretch contrast to full 0-255
-    .sharpen({ sigma: 1.5 })
-    .threshold(140)         // binarize: dark text → black, light bg → white
-    .png()
-    .toBuffer();
-
-  // ── Variant B: inverted (light text on dark background) ──
-  const variantB = await sharp(imgBuffer)
+  // Single variant: grayscale + normalize + sharpen + threshold
+  const processed = await sharp(imgBuffer)
     .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
     .grayscale()
     .normalize()
     .sharpen({ sigma: 1.5 })
-    .negate()               // invert before threshold → catches white/bright text on dark bg
-    .threshold(140)
+    .threshold(128)
     .png()
     .toBuffer();
 
-  // ── Variant C: softer threshold (catches medium-contrast text) ──
-  const variantC = await sharp(imgBuffer)
-    .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
-    .grayscale()
-    .normalize()
-    .sharpen({ sigma: 2.0 })
-    .threshold(100)         // lower threshold → more permissive
-    .png()
-    .toBuffer();
-
-  // Run OCR on all variants and merge unique text
-  const allText = new Set();
-  for (const variant of [variantA, variantB, variantC]) {
-    try {
-      const { data: { text } } = await worker.recognize(variant);
-      if (text && text.trim().length > 0) {
-        // Split into lines, trim each, keep non-empty
-        for (const line of text.split('\n')) {
-          const trimmed = line.trim();
-          if (trimmed.length >= 2) allText.add(trimmed);
-        }
-      }
-    } catch (err) {
-      console.error('[mediaModeration] OCR variant error:', err.message);
+  let merged = '';
+  try {
+    const { data: { text } } = await worker.recognize(processed);
+    if (text && text.trim().length > 0) {
+      const lines = text.split('\n').map(l => l.trim()).filter(l => l.length >= 2);
+      merged = lines.join('\n');
     }
+  } catch (err) {
+    console.error('[mediaModeration] OCR error:', err.message);
   }
 
-  const merged = [...allText].join('\n');
   if (merged.length > 0) {
-    console.log(`[mediaModeration] OCR extracted ${allText.size} text lines (${merged.length} chars)`);
+    console.log(`[mediaModeration] OCR extracted ${merged.split('\n').length} text lines (${merged.length} chars)`);
     console.log(`[mediaModeration] OCR text preview: "${merged.slice(0, 200)}${merged.length > 200 ? '…' : ''}"`);
   }
   return merged;
@@ -655,48 +624,33 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
       if (metaReasons.length > 0) reasons.push(...metaReasons);
     }
 
-    /* ── 3. Analyze each frame/photo ─────────────────────── */
-    const allImages = isVideo ? framePaths : [buffer];
-
-    for (let i = 0; i < allImages.length; i++) {
-      const imgSource = allImages[i];
-
-      // 3. OCR — detect contact info + storefront/sign text (runs on every frame)
-      try {
-        const ocrText = await ocrImage(imgSource);
-        if (ocrText.trim().length > 0) {
-          // Quality gate: skip detection if OCR text is noise/artifacts (not real text)
-          if (!isLikelyRealText(ocrText)) {
-            console.log(`[mediaModeration] OCR text filtered as noise in ${isVideo ? `frame ${i + 1}` : 'image'} (${ocrText.trim().length} chars, text: "${ocrText.trim().slice(0, 80)}...")`);
-          } else {
-            // Check for contact / off-platform info
+    /* ── 3. OCR analysis (VIDEO FRAMES ONLY) ─────────────── */
+    // Photos skip OCR entirely — Tesseract on regular photographs is slow
+    // and produces garbage text that triggers false positives. OCR is only
+    // useful on video frames where someone might overlay contact info.
+    if (isVideo && framePaths.length > 0) {
+      for (let i = 0; i < framePaths.length; i++) {
+        try {
+          const ocrText = await ocrImage(framePaths[i]);
+          if (ocrText.trim().length > 0 && isLikelyRealText(ocrText)) {
             const contactReasons = detectContactInfo(ocrText);
             if (contactReasons.length > 0) {
-              console.log(`[mediaModeration] Contact info detected in ${isVideo ? `frame ${i + 1}` : 'image'}:`, contactReasons);
+              console.log(`[mediaModeration] Contact info detected in frame ${i + 1}:`, contactReasons);
               reasons.push(...contactReasons);
             }
-
-            // Check for storefront signs, street signs, location text
             const signReasons = detectSignsAndStorefronts(ocrText);
             if (signReasons.length > 0) {
-              console.log(`[mediaModeration] Sign/storefront text detected in ${isVideo ? `frame ${i + 1}` : 'image'}:`, signReasons);
+              console.log(`[mediaModeration] Sign text detected in frame ${i + 1}:`, signReasons);
               reasons.push(...signReasons);
             }
-
-            if (contactReasons.length === 0 && signReasons.length === 0) {
-              console.log(`[mediaModeration] OCR found text but no violations in ${isVideo ? `frame ${i + 1}` : 'image'}`);
-            }
           }
-        } else {
-          console.log(`[mediaModeration] No text detected via OCR in ${isVideo ? `frame ${i + 1}` : 'image'}`);
+        } catch (err) {
+          console.error(`[mediaModeration] OCR error on frame ${i + 1}:`, err.message);
         }
-      } catch (err) {
-        console.error(`[mediaModeration] OCR error on ${isVideo ? `frame ${i + 1}` : 'image'}:`, err.message);
-        // Non-critical — continue (OCR failure shouldn't block uploads entirely)
+        if (reasons.length >= 3) break;
       }
-
-      // If already enough reasons, break early (no need to check every frame)
-      if (reasons.length >= 3) break;
+    } else if (!isVideo) {
+      console.log('[mediaModeration] Photo upload — skipping OCR (fast path)');
     }
 
     /* ── 4. Final decision ───────────────────────────────── */
