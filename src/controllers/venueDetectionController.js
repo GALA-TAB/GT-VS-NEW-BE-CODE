@@ -260,7 +260,7 @@ exports.generateAllTitles = catchAsync(async (req, res, next) => {
  * before allowing "Next" / "Save").
  * ─────────────────────────────────────────────────────── */
 exports.checkContent = catchAsync(async (req, res, next) => {
-  let { texts } = req.body;
+  let { texts, serviceListingId } = req.body;
   if (!texts) return next(new AppError('Please provide texts to check', 400));
 
   // Normalise to array
@@ -271,16 +271,39 @@ exports.checkContent = catchAsync(async (req, res, next) => {
   const cf = settings.contentFiltering || {};
   const filterEnabled = cf.enabled !== false;
 
-  // ── Always look up the requesting vendor's names ──
-  // Company name detection runs regardless of the content-filter master toggle
-  // because it is a per-vendor business rule, not a global content policy.
-  // We check companyName AND fullName (firstName + lastName) so the block
-  // works even when companyName is not set in the vendor profile.
+  // ── Look up vendor names from BOTH the requesting user AND the listing's vendor ──
+  // When an admin creates/edits a listing on behalf of a vendor, req.user is the
+  // admin (who has no companyName). We also look up the listing's actual vendorId
+  // so the company-name check always runs against the correct vendor.
   const vendorNamesToBlock = [];
-  if (req.user && req.user._id) {
+  const seenUserIds = new Set();
+
+  // 1. Check the listing's actual vendorId (most reliable for moderation)
+  if (serviceListingId) {
+    try {
+      const listing = await ServiceListing.findById(serviceListingId).select('vendorId').lean();
+      if (listing?.vendorId) {
+        const listingVendor = await User.findById(listing.vendorId)
+          .select('companyName firstName lastName email').lean();
+        console.log('[checkContent] listing vendor lookup', listing.vendorId,
+          '=> companyName:', JSON.stringify(listingVendor?.companyName),
+          'firstName:', JSON.stringify(listingVendor?.firstName),
+          'lastName:', JSON.stringify(listingVendor?.lastName));
+        if (listingVendor?.companyName) vendorNamesToBlock.push(listingVendor.companyName);
+        const fullName = [listingVendor?.firstName, listingVendor?.lastName].filter(Boolean).join(' ');
+        if (fullName.trim()) vendorNamesToBlock.push(fullName);
+        seenUserIds.add(String(listing.vendorId));
+      }
+    } catch (e) {
+      console.log('[checkContent] listing lookup failed:', e.message);
+    }
+  }
+
+  // 2. Also check the requesting user (fallback / additional names)
+  if (req.user && req.user._id && !seenUserIds.has(String(req.user._id))) {
     const vendor = await User.findById(req.user._id)
       .select('companyName firstName lastName email').lean();
-    console.log('[checkContent] vendor lookup', req.user._id,
+    console.log('[checkContent] req.user lookup', req.user._id,
       '=> companyName:', JSON.stringify(vendor?.companyName),
       'firstName:', JSON.stringify(vendor?.firstName),
       'lastName:', JSON.stringify(vendor?.lastName),
@@ -288,10 +311,13 @@ exports.checkContent = catchAsync(async (req, res, next) => {
     if (vendor?.companyName) vendorNamesToBlock.push(vendor.companyName);
     const fullName = [vendor?.firstName, vendor?.lastName].filter(Boolean).join(' ');
     if (fullName.trim()) vendorNamesToBlock.push(fullName);
-    console.log('[checkContent] namesToBlock =', JSON.stringify(vendorNamesToBlock));
-  } else {
+  } else if (!req.user || !req.user._id) {
     console.log('[checkContent] WARNING: no req.user or req.user._id — cannot look up vendor names');
   }
+
+  // Deduplicate names
+  const uniqueNames = [...new Set(vendorNamesToBlock)];
+  console.log('[checkContent] namesToBlock =', JSON.stringify(uniqueNames));
 
   // When content filtering is enabled, ALL detection categories run.
   // Individual toggles are no longer used — the master toggle controls everything.
@@ -315,7 +341,7 @@ exports.checkContent = catchAsync(async (req, res, next) => {
       : { clean: true, violations: [], allMatches: [], summary: '' };
 
     // Always check for vendor company name / full name (independent of master toggle)
-    for (const vName of vendorNamesToBlock) {
+    for (const vName of uniqueNames) {
       const cnReasons = detectCompanyName(String(t), vName);
       if (cnReasons.length > 0) {
         console.log('[checkContent] DETECTED vendor name in text:',
