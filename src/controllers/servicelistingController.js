@@ -635,11 +635,16 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
 
   // Look up vendor's names for moderation (companyName + fullName)
   const vendor = await User.findById(vendorId)
-    .select('companyName firstName lastName').lean();
+    .select('companyName firstName lastName email').lean();
+  console.log('[updateServiceListing] vendor lookup', vendorId,
+    '=> companyName:', JSON.stringify(vendor?.companyName),
+    'firstName:', JSON.stringify(vendor?.firstName),
+    'lastName:', JSON.stringify(vendor?.lastName),
+    'email:', JSON.stringify(vendor?.email));
   const companyName = vendor?.companyName || '';
   const vendorFullName = [vendor?.firstName, vendor?.lastName].filter(Boolean).join(' ');
   const vendorNames = [companyName, vendorFullName].filter(Boolean);
-  console.log('[updateServiceListing] vendor', vendorId, 'namesToBlock =', JSON.stringify(vendorNames));
+  console.log('[updateServiceListing] namesToBlock =', JSON.stringify(vendorNames));
 
   // ── Text content moderation ──
   const modOpts = { companyName, vendorNames: vendorFullName ? [vendorFullName] : [] };
@@ -802,11 +807,16 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
 
   // ── Text content moderation ──
   const vendorForMod = await User.findById(req.user._id)
-    .select('companyName firstName lastName').lean();
+    .select('companyName firstName lastName email').lean();
+  console.log('[updateServiceDetail] vendor lookup', req.user._id,
+    '=> companyName:', JSON.stringify(vendorForMod?.companyName),
+    'firstName:', JSON.stringify(vendorForMod?.firstName),
+    'lastName:', JSON.stringify(vendorForMod?.lastName),
+    'email:', JSON.stringify(vendorForMod?.email));
   const vendorCompanyName = vendorForMod?.companyName || '';
   const vendorFullName2 = [vendorForMod?.firstName, vendorForMod?.lastName].filter(Boolean).join(' ');
   const vendorNames2 = [vendorCompanyName, vendorFullName2].filter(Boolean);
-  console.log('[updateServiceDetail] vendor', req.user._id, 'namesToBlock =', JSON.stringify(vendorNames2));
+  console.log('[updateServiceDetail] namesToBlock =', JSON.stringify(vendorNames2));
 
   const modOpts2 = { companyName: vendorCompanyName, vendorNames: vendorFullName2 ? [vendorFullName2] : [] };
   const textToCheck = { title, description, spaceTitle, additionalInfo, keyword };

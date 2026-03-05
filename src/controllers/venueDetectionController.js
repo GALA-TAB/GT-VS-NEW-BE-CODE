@@ -279,12 +279,18 @@ exports.checkContent = catchAsync(async (req, res, next) => {
   const vendorNamesToBlock = [];
   if (req.user && req.user._id) {
     const vendor = await User.findById(req.user._id)
-      .select('companyName firstName lastName').lean();
+      .select('companyName firstName lastName email').lean();
+    console.log('[checkContent] vendor lookup', req.user._id,
+      '=> companyName:', JSON.stringify(vendor?.companyName),
+      'firstName:', JSON.stringify(vendor?.firstName),
+      'lastName:', JSON.stringify(vendor?.lastName),
+      'email:', JSON.stringify(vendor?.email));
     if (vendor?.companyName) vendorNamesToBlock.push(vendor.companyName);
     const fullName = [vendor?.firstName, vendor?.lastName].filter(Boolean).join(' ');
     if (fullName.trim()) vendorNamesToBlock.push(fullName);
-    console.log('[checkContent] vendor', req.user._id,
-      'namesToBlock =', JSON.stringify(vendorNamesToBlock));
+    console.log('[checkContent] namesToBlock =', JSON.stringify(vendorNamesToBlock));
+  } else {
+    console.log('[checkContent] WARNING: no req.user or req.user._id — cannot look up vendor names');
   }
 
   // When content filtering is enabled, ALL detection categories run.
