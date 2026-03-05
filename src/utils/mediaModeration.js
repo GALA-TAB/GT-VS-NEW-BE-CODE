@@ -6,8 +6,8 @@
  * Pipeline:
  *   1. Metadata inspection (GPS / geolocation stripping)
  *   2. Video: duration check (≤30s), audio removal, frame extraction
- *   3. OCR on VIDEO FRAMES ONLY → contact-info + sign detection
- *      (Photos skip OCR entirely for speed + zero false positives)
+ *   3. OCR on every frame/photo → contact-info + sign detection
+ *      (Single fast variant with 8s timeout to avoid slow uploads)
  *
  * Dependencies:
  *   fluent-ffmpeg (ffmpeg + ffprobe wrappers)
@@ -185,9 +185,15 @@ const WORD_TO_DIGIT = {
 };
 
 function normalizeNumberWords(text) {
+  // First, handle "eight hundred" → "800", "one hundred" → "100" etc.
+  let result = text.replace(
+    /\b(one|two|three|four|five|six|seven|eight|nine)\s+hundred\b/gi,
+    (_, digit) => String(WORD_TO_DIGIT[digit.toLowerCase()] * 100)
+  );
+  // Then replace remaining single digit words
   const words = Object.keys(WORD_TO_DIGIT).join('|');
   const re = new RegExp(`\\b(${words})\\b`, 'gi');
-  return text.replace(re, (m) => WORD_TO_DIGIT[m.toLowerCase()] || m);
+  return result.replace(re, (m) => WORD_TO_DIGIT[m.toLowerCase()] || m);
 }
 
 /**
@@ -210,6 +216,8 @@ async function getOcrWorker() {
   }
   return ocrWorker;
 }
+
+const OCR_TIMEOUT_MS = 8000; // 8 seconds max per image
 
 async function ocrImage(bufferOrPath) {
   const sharp = require('sharp');
@@ -243,13 +251,19 @@ async function ocrImage(bufferOrPath) {
 
   let merged = '';
   try {
-    const { data: { text } } = await worker.recognize(processed);
+    // Race OCR against timeout — if Tesseract takes too long, skip it
+    const ocrPromise = worker.recognize(processed);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('OCR timeout')), OCR_TIMEOUT_MS)
+    );
+    const { data: { text } } = await Promise.race([ocrPromise, timeoutPromise]);
     if (text && text.trim().length > 0) {
       const lines = text.split('\n').map(l => l.trim()).filter(l => l.length >= 2);
       merged = lines.join('\n');
     }
   } catch (err) {
-    console.error('[mediaModeration] OCR error:', err.message);
+    console.log(`[mediaModeration] OCR skipped: ${err.message}`);
+    return ''; // timeout or error → approve the image (no text found)
   }
 
   if (merged.length > 0) {
@@ -334,6 +348,8 @@ const CONTACT_PATTERNS = [
   { category: CAT.PAYMENT, pattern: /(?:send|pay|transfer|wire)\s+(?:(?:money|payment)\s+)?(?:to|via|through|on)\s+(?:cash\s*app|venmo|zelle|pay\s*pal|apple\s*pay|google\s*pay)\b/gi },
   // "pay me" / "send deposit"
   { category: CAT.PAYMENT, pattern: /\b(?:pay\s+me|send\s+(?:me\s+)?(?:a\s+)?(?:deposit|payment|money))\b/gi },
+  // CashApp $tag (including spaced: "$ n a m e")
+  { category: CAT.PAYMENT, pattern: /\$\s*[a-zA-Z][a-zA-Z0-9_\s]{1,25}[a-zA-Z0-9]/gi },
 
   /* ────────── 5. GIFT CARDS ────────── */
   { category: CAT.GIFT, pattern: /\b(?:gift\s*card|e-?gift|prepaid\s*card)\b/gi },
@@ -358,6 +374,8 @@ const CONTACT_PATTERNS = [
   { category: CAT.SOCIAL, pattern: /\b(?:instagram|insta|ig|snapchat|tik\s*tok|telegram|whats?\s*app|discord|twitter|x\.com|facebook)\s*[-:@=|/\\]?\s*@?[\w.][\w.]{1,30}/gi },
   // "my IG is @…" / "add me on snapchat …"
   { category: CAT.SOCIAL, pattern: /(?:my|add\s+me\s+on|follow\s+(?:me\s+)?on|find\s+me\s+on|hit\s+me\s+(?:up\s+)?on|hmu\s+on)\s+\b(?:instagram|insta|ig|snapchat|tik\s*tok|telegram|whats?\s*app|discord|twitter|facebook)\s*[-:@=]?\s*@?[\w.]{1,30}/gi },
+  // "@ insta is …" / "@ig …" (inverted handle pattern)
+  { category: CAT.SOCIAL, pattern: /@\s*(?:instagram|insta|ig|snapchat|tik\s*tok|telegram|whats?\s*app|discord|twitter|facebook)\s+(?:is\s+)?@?[\w.]{1,30}/gi },
 
   /* ────────── 8. PHONE NUMBERS  (last among contact — most general) ──────── */
   // US: (123) 456-7890 / 123-456-7890 / 123.456.7890 / +1 …
@@ -389,6 +407,17 @@ const CONTACT_PATTERNS = [
 
   /* ────────── 12. PHYSICAL ADDRESSES ────────── */
   { category: CAT.ADDRESS, pattern: /\b\d{1,5}\s+[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|hwy|highway)\b/gi },
+  // Apartment / unit / suite
+  { category: CAT.ADDRESS, pattern: /\b(?:apt|apartment|unit|suite|ste|#)\s*\.?\s*\d{1,5}[a-zA-Z]?\b/gi },
+  // Zip codes (5-digit or ZIP+4, keyword-gated to reduce false positives)
+  { category: CAT.ADDRESS, pattern: /\b(?:zip|postal|zip\s*code)\s*:?\s*\d{5}(?:-\d{4})?\b/gi },
+  // "send me your address" / "meet me at…" / "come to…"
+  { category: CAT.ADDRESS, pattern: /\b(?:send\s+(?:me\s+)?(?:your|the)\s+address|meet\s+me\s+at|come\s+to\s+(?:my|the|our))\b/gi },
+
+  /* ────────── 13. PERSONAL IDENTITY (DOB / SSN) ────────── */
+  { category: 'Personal identity info', pattern: /\b(?:social\s+security|ssn|ss#)\s*:?\s*\d{3}[-\s]?\d{2}[-\s]?\d{4}\b/gi },
+  { category: 'Personal identity info', pattern: /\b(?:date\s+of\s+birth|dob|d\.o\.b)\s*:?\s*\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}\b/gi },
+  { category: 'Personal identity info', pattern: /\bssn\s*:?\s*\d{3}/gi },
 ];
 
 /**
@@ -624,33 +653,28 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
       if (metaReasons.length > 0) reasons.push(...metaReasons);
     }
 
-    /* ── 3. OCR analysis (VIDEO FRAMES ONLY) ─────────────── */
-    // Photos skip OCR entirely — Tesseract on regular photographs is slow
-    // and produces garbage text that triggers false positives. OCR is only
-    // useful on video frames where someone might overlay contact info.
-    if (isVideo && framePaths.length > 0) {
-      for (let i = 0; i < framePaths.length; i++) {
-        try {
-          const ocrText = await ocrImage(framePaths[i]);
-          if (ocrText.trim().length > 0 && isLikelyRealText(ocrText)) {
-            const contactReasons = detectContactInfo(ocrText);
-            if (contactReasons.length > 0) {
-              console.log(`[mediaModeration] Contact info detected in frame ${i + 1}:`, contactReasons);
-              reasons.push(...contactReasons);
-            }
-            const signReasons = detectSignsAndStorefronts(ocrText);
-            if (signReasons.length > 0) {
-              console.log(`[mediaModeration] Sign text detected in frame ${i + 1}:`, signReasons);
-              reasons.push(...signReasons);
-            }
+    /* ── 3. OCR analysis (photos + video frames) ───────────── */
+    const allImages = isVideo ? framePaths : [buffer];
+
+    for (let i = 0; i < allImages.length; i++) {
+      try {
+        const ocrText = await ocrImage(allImages[i]);
+        if (ocrText.trim().length > 0 && isLikelyRealText(ocrText)) {
+          const contactReasons = detectContactInfo(ocrText);
+          if (contactReasons.length > 0) {
+            console.log(`[mediaModeration] Contact info in ${isVideo ? `frame ${i + 1}` : 'image'}:`, contactReasons);
+            reasons.push(...contactReasons);
           }
-        } catch (err) {
-          console.error(`[mediaModeration] OCR error on frame ${i + 1}:`, err.message);
+          const signReasons = detectSignsAndStorefronts(ocrText);
+          if (signReasons.length > 0) {
+            console.log(`[mediaModeration] Sign text in ${isVideo ? `frame ${i + 1}` : 'image'}:`, signReasons);
+            reasons.push(...signReasons);
+          }
         }
-        if (reasons.length >= 3) break;
+      } catch (err) {
+        console.error(`[mediaModeration] OCR error on ${isVideo ? `frame ${i + 1}` : 'image'}:`, err.message);
       }
-    } else if (!isVideo) {
-      console.log('[mediaModeration] Photo upload — skipping OCR (fast path)');
+      if (reasons.length >= 3) break;
     }
 
     /* ── 4. Final decision ───────────────────────────────── */
@@ -675,10 +699,39 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
 }
 
 /* ═══════════════════════════════════════════════════════════
+ * TEXT FIELD MODERATION
+ *
+ * Runs the same contact/payment/identity detection patterns on raw text
+ * fields (listing title, description, booking messages, reviews, etc.)
+ * No OCR needed — just regex against the user-typed text.
+ *
+ * @param  {string}  text — the text to moderate
+ * @returns {{ approved: boolean, reasons: string[] }}
+ * ═══════════════════════════════════════════════════════════ */
+function moderateText(text) {
+  if (!text || typeof text !== 'string' || text.trim().length < 3) {
+    return { approved: true, reasons: [] };
+  }
+
+  // For direct text moderation (not OCR), skip the quality gate —
+  // this IS real user-typed text, not noisy OCR output.
+  const contactReasons = detectContactInfo(text);
+  const signReasons = detectSignsAndStorefronts(text);
+  const allReasons = [...contactReasons, ...signReasons];
+  const uniqueReasons = [...new Set(allReasons)];
+
+  return {
+    approved: uniqueReasons.length === 0,
+    reasons: uniqueReasons,
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════
  * EXPORTS
  * ═══════════════════════════════════════════════════════════ */
 module.exports = {
   moderateMedia,
+  moderateText,
   inspectMetadata,
   getVideoDuration,
   muteVideo,

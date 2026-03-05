@@ -19,6 +19,7 @@ const User = require('../models/users/User');
 const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDeleteFilter');
 const createLog = require('../utils/createLog');
 const { generateTitleForListing } = require('../utils/generateListingTitle');
+const { moderateText } = require('../utils/mediaModeration');
 
 const getDateRange = (filter) => {
   const now = moment.utc();
@@ -631,6 +632,22 @@ const createServiceListing = catchAsync(async (req, res, next) => {
 const updateServiceListing = catchAsync(async (req, res, next) => {
   const vendorId = req.user._id;
   const serviceListingId = req.params.id;
+
+  // ── Text content moderation ──
+  const textFields = ['title', 'description', 'additionalInfo', 'spaceTitle', 'keyword'];
+  for (const field of textFields) {
+    if (req.body[field]) {
+      const { approved, reasons } = moderateText(req.body[field]);
+      if (!approved) {
+        return next(new AppError(
+          `The ${field} contains prohibited content: ${reasons[0]}`,
+          400,
+          { field, reasons }
+        ));
+      }
+    }
+  }
+
   const query = {
     _id: new mongoose.Types.ObjectId(serviceListingId)
   };
@@ -755,6 +772,21 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     TimePerHour,
     photography
   } = req.body;
+
+  // ── Text content moderation ──
+  const textToCheck = { title, description, spaceTitle, additionalInfo, keyword };
+  for (const [field, value] of Object.entries(textToCheck)) {
+    if (value) {
+      const { approved, reasons } = moderateText(value);
+      if (!approved) {
+        return next(new AppError(
+          `The ${field} contains prohibited content: ${reasons[0]}`,
+          400,
+          { field, reasons }
+        ));
+      }
+    }
+  }
 
   const vendorId = req.user._id;
   const serviceListingId = req.params.id;

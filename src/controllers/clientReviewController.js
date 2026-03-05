@@ -5,6 +5,7 @@ const APIFeatures = require('../utils/apiFeatures');
 const { ClientReviewValidation } = require('../utils/joi/clientReviewValidation');
 const joiError = require('../utils/joiError');
 const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDeleteFilter');
+const { moderateText } = require('../utils/mediaModeration');
 
 // Create a new client review
 const createClientReview = catchAsync(async (req, res, next) => {
@@ -19,6 +20,18 @@ const createClientReview = catchAsync(async (req, res, next) => {
     if (error) {
         const errorFields = joiError(error);
         return next(new AppError('Validation failed', 400, { errorFields }));
+    }
+
+    // Text content moderation
+    if (description) {
+        const { approved, reasons } = moderateText(description);
+        if (!approved) {
+            return next(new AppError(
+                `Review contains prohibited content: ${reasons[0]}`,
+                400,
+                { field: 'description', reasons }
+            ));
+        }
     }
 
     // Create the client review

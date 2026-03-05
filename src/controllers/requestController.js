@@ -34,6 +34,7 @@ const Payment = require('../models/Payment');
 const Extensionbooking = require('../models/Extensionbooking');
 const Discount = require('../models/PromoDiscountCode');
 const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDeleteFilter');
+const { moderateText } = require('../utils/mediaModeration');
 
 const filter = (param) => {
   const { status, startDate, endDate, cancelRequest } = param;
@@ -91,6 +92,18 @@ const createBooking = catchAsync(async (req, res, next) => {
     addOnServices,
     timezone
   } = req.body;
+
+  // ── Text content moderation on booking message ──
+  if (message) {
+    const { approved, reasons } = moderateText(message);
+    if (!approved) {
+      return next(new AppError(
+        `Your message contains prohibited content: ${reasons[0]}`,
+        400,
+        { field: 'message', reasons }
+      ));
+    }
+  }
 
   console.log('Request body:', req.body);
   const { error } = requestSchema.validate(req.body, {
