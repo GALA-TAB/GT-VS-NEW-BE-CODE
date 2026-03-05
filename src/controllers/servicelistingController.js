@@ -636,6 +636,7 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
   // Look up vendor's company name for moderation
   const vendor = await User.findById(vendorId).select('companyName').lean();
   const companyName = vendor?.companyName || '';
+  console.log('[updateServiceListing] vendor', vendorId, 'companyName =', JSON.stringify(companyName));
 
   // ── Text content moderation ──
   const textFields = ['title', 'description', 'additionalInfo', 'spaceTitle', 'keyword', 'cancellationPolicy'];
@@ -808,6 +809,7 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
   // ── Text content moderation ──
   const vendorForMod = await User.findById(req.user._id).select('companyName').lean();
   const vendorCompanyName = vendorForMod?.companyName || '';
+  console.log('[updateServiceDetail] vendor', req.user._id, 'companyName =', JSON.stringify(vendorCompanyName));
 
   const textToCheck = { title, description, spaceTitle, additionalInfo, keyword };
   for (const [field, value] of Object.entries(textToCheck)) {

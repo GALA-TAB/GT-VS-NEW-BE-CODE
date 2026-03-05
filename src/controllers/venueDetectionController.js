@@ -269,23 +269,16 @@ exports.checkContent = catchAsync(async (req, res, next) => {
 
   const settings = await getOrCreateSettings();
   const cf = settings.contentFiltering || {};
+  const filterEnabled = cf.enabled !== false;
 
-  // If content filtering is globally disabled, everything passes
-  if (cf.enabled === false) {
-    return res.status(200).json({
-      status: 'success',
-      data: {
-        clean: true,
-        results: texts.map(() => ({ clean: true, violations: [], allMatches: [], summary: '' })),
-      },
-    });
-  }
-
-  // ── Look up the requesting vendor's company name (if any) ──
+  // ── Always look up the requesting vendor's company name ──
+  // Company name detection runs regardless of the content-filter master toggle
+  // because it is a per-vendor business rule, not a global content policy.
   let vendorCompanyName = '';
   if (req.user && req.user._id) {
     const vendor = await User.findById(req.user._id).select('companyName').lean();
     vendorCompanyName = vendor?.companyName || '';
+    console.log('[checkContent] vendor', req.user._id, 'companyName =', JSON.stringify(vendorCompanyName));
   }
 
   // When content filtering is enabled, ALL detection categories run.
@@ -304,11 +297,16 @@ exports.checkContent = catchAsync(async (req, res, next) => {
   };
 
   const results = texts.map((t) => {
-    const scanResult = scanContent(String(t), scanOptions);
-    // Also check for vendor company name
+    // Run the general content scan only when the master toggle is on
+    const scanResult = filterEnabled
+      ? scanContent(String(t), scanOptions)
+      : { clean: true, violations: [], allMatches: [], summary: '' };
+
+    // Always check for vendor company name (independent of master toggle)
     if (vendorCompanyName) {
       const cnReasons = detectCompanyName(String(t), vendorCompanyName);
       if (cnReasons.length > 0) {
+        console.log('[checkContent] DETECTED company name in text:', JSON.stringify(String(t).substring(0, 80)));
         scanResult.clean = false;
         scanResult.violations = scanResult.violations || [];
         scanResult.violations.push({ category: 'companyName', message: cnReasons[0] });
