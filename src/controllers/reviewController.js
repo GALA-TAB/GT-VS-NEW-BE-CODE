@@ -51,11 +51,15 @@ const AddReview = catchAsync(async (req, res, next) => {
 
   // ── Text content moderation (same detection as service description) ──
   if (comment) {
-    // Get the vendor's company name from the booking's service
+    // Get the vendor's company name + full name from the booking's service
     const reviewVendor = findBooking?.service?.vendorId
-      ? await User.findById(findBooking.service.vendorId).select('companyName').lean()
+      ? await User.findById(findBooking.service.vendorId).select('companyName firstName lastName').lean()
       : null;
-    const { approved, reasons } = moderateText(comment, { companyName: reviewVendor?.companyName || '' });
+    const rvFullName = [reviewVendor?.firstName, reviewVendor?.lastName].filter(Boolean).join(' ');
+    const { approved, reasons } = moderateText(comment, {
+      companyName: reviewVendor?.companyName || '',
+      vendorNames: rvFullName ? [rvFullName] : [],
+    });
     if (!approved) {
       return next(new AppError(
         `Review contains prohibited content: ${reasons[0]}`,
@@ -403,16 +407,21 @@ const EditReview = catchAsync(async (req, res, next) => {
 
   // ── Text content moderation (same detection as service description) ──
   if (req.body.comment) {
-    // Get the vendor's company name via the review's booking → service → vendorId
+    // Get the vendor's company name + full name via the review's booking → service → vendorId
     let editVendorCompanyName = '';
+    let editVendorFullName = '';
     if (review.reviewOn) {
       const reviewBooking = await Bookings.findById(review.reviewOn).populate({ path: 'service', select: 'vendorId' }).lean();
       if (reviewBooking?.service?.vendorId) {
-        const editVendor = await User.findById(reviewBooking.service.vendorId).select('companyName').lean();
+        const editVendor = await User.findById(reviewBooking.service.vendorId).select('companyName firstName lastName').lean();
         editVendorCompanyName = editVendor?.companyName || '';
+        editVendorFullName = [editVendor?.firstName, editVendor?.lastName].filter(Boolean).join(' ');
       }
     }
-    const { approved, reasons } = moderateText(req.body.comment, { companyName: editVendorCompanyName });
+    const { approved, reasons } = moderateText(req.body.comment, {
+      companyName: editVendorCompanyName,
+      vendorNames: editVendorFullName ? [editVendorFullName] : [],
+    });
     if (!approved) {
       return next(new AppError(
         `Review contains prohibited content: ${reasons[0]}`,

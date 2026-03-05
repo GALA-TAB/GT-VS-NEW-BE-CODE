@@ -893,6 +893,7 @@ function detectCompanyName(text, companyName) {
  * @param  {string}  text    — the text to moderate
  * @param  {object}  [opts]  — optional context
  * @param  {string}  [opts.companyName] — vendor company name to block
+ * @param  {string[]} [opts.vendorNames] — additional names to block (fullName, etc.)
  * @returns {{ approved: boolean, reasons: string[] }}
  * ═══════════════════════════════════════════════════════════ */
 function moderateText(text, opts = {}) {
@@ -904,9 +905,21 @@ function moderateText(text, opts = {}) {
   // this IS real user-typed text, not noisy OCR output.
   const contactReasons   = detectContactInfo(text);
   const signReasons      = detectSignsAndStorefronts(text);
-  const companyReasons   = opts.companyName
-    ? detectCompanyName(text, opts.companyName)
-    : [];
+
+  // Check company name and any additional vendor names (fullName, etc.)
+  let companyReasons = [];
+  const namesToCheck = [
+    ...(opts.companyName ? [opts.companyName] : []),
+    ...(opts.vendorNames || []),
+  ].filter(Boolean);
+  for (const name of namesToCheck) {
+    const reasons = detectCompanyName(text, name);
+    if (reasons.length > 0) {
+      companyReasons = reasons;
+      break; // one match is enough
+    }
+  }
+
   const allReasons   = [...contactReasons, ...signReasons, ...companyReasons];
   const uniqueReasons = [...new Set(allReasons)];
 

@@ -271,14 +271,20 @@ exports.checkContent = catchAsync(async (req, res, next) => {
   const cf = settings.contentFiltering || {};
   const filterEnabled = cf.enabled !== false;
 
-  // ── Always look up the requesting vendor's company name ──
+  // ── Always look up the requesting vendor's names ──
   // Company name detection runs regardless of the content-filter master toggle
   // because it is a per-vendor business rule, not a global content policy.
-  let vendorCompanyName = '';
+  // We check companyName AND fullName (firstName + lastName) so the block
+  // works even when companyName is not set in the vendor profile.
+  const vendorNamesToBlock = [];
   if (req.user && req.user._id) {
-    const vendor = await User.findById(req.user._id).select('companyName').lean();
-    vendorCompanyName = vendor?.companyName || '';
-    console.log('[checkContent] vendor', req.user._id, 'companyName =', JSON.stringify(vendorCompanyName));
+    const vendor = await User.findById(req.user._id)
+      .select('companyName firstName lastName').lean();
+    if (vendor?.companyName) vendorNamesToBlock.push(vendor.companyName);
+    const fullName = [vendor?.firstName, vendor?.lastName].filter(Boolean).join(' ');
+    if (fullName.trim()) vendorNamesToBlock.push(fullName);
+    console.log('[checkContent] vendor', req.user._id,
+      'namesToBlock =', JSON.stringify(vendorNamesToBlock));
   }
 
   // When content filtering is enabled, ALL detection categories run.
@@ -302,11 +308,12 @@ exports.checkContent = catchAsync(async (req, res, next) => {
       ? scanContent(String(t), scanOptions)
       : { clean: true, violations: [], allMatches: [], summary: '' };
 
-    // Always check for vendor company name (independent of master toggle)
-    if (vendorCompanyName) {
-      const cnReasons = detectCompanyName(String(t), vendorCompanyName);
+    // Always check for vendor company name / full name (independent of master toggle)
+    for (const vName of vendorNamesToBlock) {
+      const cnReasons = detectCompanyName(String(t), vName);
       if (cnReasons.length > 0) {
-        console.log('[checkContent] DETECTED company name in text:', JSON.stringify(String(t).substring(0, 80)));
+        console.log('[checkContent] DETECTED vendor name in text:',
+          JSON.stringify(String(t).substring(0, 80)), 'matched:', JSON.stringify(vName));
         scanResult.clean = false;
         scanResult.violations = scanResult.violations || [];
         scanResult.violations.push({ category: 'companyName', message: cnReasons[0] });
@@ -315,6 +322,7 @@ exports.checkContent = catchAsync(async (req, res, next) => {
         scanResult.summary = scanResult.summary
           ? scanResult.summary + '; ' + cnReasons[0]
           : cnReasons[0];
+        break; // one match is enough
       }
     }
     return scanResult;

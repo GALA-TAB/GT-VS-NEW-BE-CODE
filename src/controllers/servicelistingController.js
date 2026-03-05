@@ -19,7 +19,7 @@ const User = require('../models/users/User');
 const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDeleteFilter');
 const createLog = require('../utils/createLog');
 const { generateTitleForListing } = require('../utils/generateListingTitle');
-const { moderateText } = require('../utils/mediaModeration');
+const { moderateText, detectCompanyName } = require('../utils/mediaModeration');
 
 const getDateRange = (filter) => {
   const now = moment.utc();
@@ -633,16 +633,20 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
   const vendorId = req.user._id;
   const serviceListingId = req.params.id;
 
-  // Look up vendor's company name for moderation
-  const vendor = await User.findById(vendorId).select('companyName').lean();
+  // Look up vendor's names for moderation (companyName + fullName)
+  const vendor = await User.findById(vendorId)
+    .select('companyName firstName lastName').lean();
   const companyName = vendor?.companyName || '';
-  console.log('[updateServiceListing] vendor', vendorId, 'companyName =', JSON.stringify(companyName));
+  const vendorFullName = [vendor?.firstName, vendor?.lastName].filter(Boolean).join(' ');
+  const vendorNames = [companyName, vendorFullName].filter(Boolean);
+  console.log('[updateServiceListing] vendor', vendorId, 'namesToBlock =', JSON.stringify(vendorNames));
 
   // ── Text content moderation ──
+  const modOpts = { companyName, vendorNames: vendorFullName ? [vendorFullName] : [] };
   const textFields = ['title', 'description', 'additionalInfo', 'spaceTitle', 'keyword', 'cancellationPolicy'];
   for (const field of textFields) {
     if (req.body[field]) {
-      const { approved, reasons } = moderateText(req.body[field], { companyName });
+      const { approved, reasons } = moderateText(req.body[field], modOpts);
       if (!approved) {
         return next(new AppError(
           `The ${field} contains prohibited content: ${reasons[0]}`,
@@ -653,11 +657,25 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     }
   }
 
+  // Check location address (company name / vendor name only — no general contact-info check)
+  if (req.body.location?.address) {
+    for (const vName of vendorNames) {
+      const cnReasons = detectCompanyName(req.body.location.address, vName);
+      if (cnReasons.length > 0) {
+        return next(new AppError(
+          `The address contains prohibited content: ${cnReasons[0]}`,
+          400,
+          { field: 'address', reasons: cnReasons }
+        ));
+      }
+    }
+  }
+
   // Check custom amenities (array of strings)
   if (Array.isArray(req.body.customAmenities)) {
     for (const amenity of req.body.customAmenities) {
       if (amenity && typeof amenity === 'string') {
-        const { approved, reasons } = moderateText(amenity, { companyName });
+        const { approved, reasons } = moderateText(amenity, modOpts);
         if (!approved) {
           return next(new AppError(
             `A custom amenity contains prohibited content: ${reasons[0]}`,
@@ -795,14 +813,18 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
   } = req.body;
 
   // ── Text content moderation ──
-  const vendorForMod = await User.findById(req.user._id).select('companyName').lean();
+  const vendorForMod = await User.findById(req.user._id)
+    .select('companyName firstName lastName').lean();
   const vendorCompanyName = vendorForMod?.companyName || '';
-  console.log('[updateServiceDetail] vendor', req.user._id, 'companyName =', JSON.stringify(vendorCompanyName));
+  const vendorFullName2 = [vendorForMod?.firstName, vendorForMod?.lastName].filter(Boolean).join(' ');
+  const vendorNames2 = [vendorCompanyName, vendorFullName2].filter(Boolean);
+  console.log('[updateServiceDetail] vendor', req.user._id, 'namesToBlock =', JSON.stringify(vendorNames2));
 
+  const modOpts2 = { companyName: vendorCompanyName, vendorNames: vendorFullName2 ? [vendorFullName2] : [] };
   const textToCheck = { title, description, spaceTitle, additionalInfo, keyword };
   for (const [field, value] of Object.entries(textToCheck)) {
     if (value) {
-      const { approved, reasons } = moderateText(value, { companyName: vendorCompanyName });
+      const { approved, reasons } = moderateText(value, modOpts2);
       if (!approved) {
         return next(new AppError(
           `The ${field} contains prohibited content: ${reasons[0]}`,
@@ -815,7 +837,7 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
 
   // Check cancellation policy
   if (req.body.cancellationPolicy) {
-    const { approved, reasons } = moderateText(req.body.cancellationPolicy, { companyName: vendorCompanyName });
+    const { approved, reasons } = moderateText(req.body.cancellationPolicy, modOpts2);
     if (!approved) {
       return next(new AppError(
         `The cancellation policy contains prohibited content: ${reasons[0]}`,
@@ -825,11 +847,25 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     }
   }
 
+  // Check location address (company name / vendor name only — no general contact-info check)
+  if (location?.address) {
+    for (const vName of vendorNames2) {
+      const cnReasons = detectCompanyName(location.address, vName);
+      if (cnReasons.length > 0) {
+        return next(new AppError(
+          `The address contains prohibited content: ${cnReasons[0]}`,
+          400,
+          { field: 'address', reasons: cnReasons }
+        ));
+      }
+    }
+  }
+
   // Check custom amenities (array of strings)
   if (Array.isArray(req.body.customAmenities)) {
     for (const amenity of req.body.customAmenities) {
       if (amenity && typeof amenity === 'string') {
-        const { approved, reasons } = moderateText(amenity, { companyName: vendorCompanyName });
+        const { approved, reasons } = moderateText(amenity, modOpts2);
         if (!approved) {
           return next(new AppError(
             `A custom amenity contains prohibited content: ${reasons[0]}`,
