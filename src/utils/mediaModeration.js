@@ -801,25 +801,113 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
 }
 
 /* ═══════════════════════════════════════════════════════════
+ * VENDOR COMPANY-NAME DETECTION (fuzzy)
+ *
+ * Blocks text that contains the vendor's company name or a close
+ * misspelling of it.  Uses:
+ *  1. Normalised substring match  (strips spaces & punctuation)
+ *  2. Levenshtein distance on word n-grams of similar length
+ *  3. Leet-speak / common substitution normalisation
+ *
+ * @param  {string} text        — the user-typed text
+ * @param  {string} companyName — the vendor's company name
+ * @returns {string[]}  array of reason strings (empty = clean)
+ * ═══════════════════════════════════════════════════════════ */
+
+/** Simple Levenshtein distance (no npm dep) */
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+/** Normalise text: lowercase, replace common leet-speak, strip non-alpha */
+function normForFuzzy(str) {
+  return str
+    .toLowerCase()
+    .replace(/0/g, 'o')
+    .replace(/1/g, 'i')
+    .replace(/3/g, 'e')
+    .replace(/4/g, 'a')
+    .replace(/5/g, 's')
+    .replace(/\$/g, 's')
+    .replace(/@/g, 'a')
+    .replace(/[^a-z]/g, '');          // keep only letters
+}
+
+function detectCompanyName(text, companyName) {
+  if (!companyName || typeof companyName !== 'string') return [];
+  const cn = companyName.trim();
+  if (cn.length < 2) return [];                       // too short to be meaningful
+
+  const normCN   = normForFuzzy(cn);
+  const normText = normForFuzzy(text);
+  if (normCN.length < 2) return [];
+
+  // ── 1. Direct normalised substring match ──
+  if (normText.includes(normCN)) {
+    return ['Text contains the vendor company name'];
+  }
+
+  // ── 2. Sliding-window Levenshtein on the normalised text ──
+  const maxDist = normCN.length <= 5 ? 1 : 2;        // tolerance
+  const winLen  = normCN.length;
+  for (let i = 0; i <= normText.length - winLen; i++) {
+    const window = normText.substring(i, i + winLen);
+    if (levenshtein(window, normCN) <= maxDist) {
+      return ['Text contains a close variation of the vendor company name'];
+    }
+  }
+
+  // ── 3. Also check windows that are ±1 char longer/shorter ──
+  for (const delta of [-1, 1]) {
+    const wl = winLen + delta;
+    if (wl < 2) continue;
+    for (let i = 0; i <= normText.length - wl; i++) {
+      const window = normText.substring(i, i + wl);
+      if (levenshtein(window, normCN) <= maxDist) {
+        return ['Text contains a close variation of the vendor company name'];
+      }
+    }
+  }
+
+  return [];
+}
+
+/* ═══════════════════════════════════════════════════════════
  * TEXT FIELD MODERATION
  *
  * Runs the same contact/payment/identity detection patterns on raw text
  * fields (listing title, description, booking messages, reviews, etc.)
  * No OCR needed — just regex against the user-typed text.
  *
- * @param  {string}  text — the text to moderate
+ * @param  {string}  text    — the text to moderate
+ * @param  {object}  [opts]  — optional context
+ * @param  {string}  [opts.companyName] — vendor company name to block
  * @returns {{ approved: boolean, reasons: string[] }}
  * ═══════════════════════════════════════════════════════════ */
-function moderateText(text) {
+function moderateText(text, opts = {}) {
   if (!text || typeof text !== 'string' || text.trim().length < 3) {
     return { approved: true, reasons: [] };
   }
 
   // For direct text moderation (not OCR), skip the quality gate —
   // this IS real user-typed text, not noisy OCR output.
-  const contactReasons = detectContactInfo(text);
-  const signReasons = detectSignsAndStorefronts(text);
-  const allReasons = [...contactReasons, ...signReasons];
+  const contactReasons   = detectContactInfo(text);
+  const signReasons      = detectSignsAndStorefronts(text);
+  const companyReasons   = opts.companyName
+    ? detectCompanyName(text, opts.companyName)
+    : [];
+  const allReasons   = [...contactReasons, ...signReasons, ...companyReasons];
   const uniqueReasons = [...new Set(allReasons)];
 
   return {
@@ -841,4 +929,5 @@ module.exports = {
   ocrImage,
   detectContactInfo,
   detectSignsAndStorefronts,
+  detectCompanyName,
 };

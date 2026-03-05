@@ -2,8 +2,10 @@ const catchAsync = require('../utils/catchAsync');
 const AppError   = require('../utils/appError');
 const VenueDetection = require('../models/VenueDetection');
 const ServiceListing = require('../models/ServiceListing');
+const User = require('../models/users/User');
 const { generateTitleForListing, generateTitleSuggestions } = require('../utils/generateListingTitle');
 const { scanContent } = require('../utils/contentFilter');
+const { detectCompanyName } = require('../utils/mediaModeration');
 
 /* ───────────────────────────────────────────────────────
  * Helper — ensure exactly one settings doc exists
@@ -279,6 +281,13 @@ exports.checkContent = catchAsync(async (req, res, next) => {
     });
   }
 
+  // ── Look up the requesting vendor's company name (if any) ──
+  let vendorCompanyName = '';
+  if (req.user && req.user._id) {
+    const vendor = await User.findById(req.user._id).select('companyName').lean();
+    vendorCompanyName = vendor?.companyName || '';
+  }
+
   // When content filtering is enabled, ALL detection categories run.
   // Individual toggles are no longer used — the master toggle controls everything.
   const scanOptions = {
@@ -294,7 +303,24 @@ exports.checkContent = catchAsync(async (req, res, next) => {
     bannedWords:           cf.bannedWords || [],
   };
 
-  const results = texts.map((t) => scanContent(String(t), scanOptions));
+  const results = texts.map((t) => {
+    const scanResult = scanContent(String(t), scanOptions);
+    // Also check for vendor company name
+    if (vendorCompanyName) {
+      const cnReasons = detectCompanyName(String(t), vendorCompanyName);
+      if (cnReasons.length > 0) {
+        scanResult.clean = false;
+        scanResult.violations = scanResult.violations || [];
+        scanResult.violations.push({ category: 'companyName', message: cnReasons[0] });
+        scanResult.allMatches = scanResult.allMatches || [];
+        scanResult.allMatches.push(...cnReasons);
+        scanResult.summary = scanResult.summary
+          ? scanResult.summary + '; ' + cnReasons[0]
+          : cnReasons[0];
+      }
+    }
+    return scanResult;
+  });
   const allClean = results.every((r) => r.clean);
 
   res.status(200).json({

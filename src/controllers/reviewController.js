@@ -9,6 +9,7 @@ const joiError = require('../utils/joiError');
 const sendNotification = require('../utils/storeNotification');
 const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDeleteFilter');
 const { moderateText } = require('../utils/mediaModeration');
+const User = require('../models/users/User');
 
 const AddReview = catchAsync(async (req, res, next) => {
   const { rating, comment, reviewOn } = req.body;
@@ -50,7 +51,11 @@ const AddReview = catchAsync(async (req, res, next) => {
 
   // ── Text content moderation (same detection as service description) ──
   if (comment) {
-    const { approved, reasons } = moderateText(comment);
+    // Get the vendor's company name from the booking's service
+    const reviewVendor = findBooking?.service?.vendorId
+      ? await User.findById(findBooking.service.vendorId).select('companyName').lean()
+      : null;
+    const { approved, reasons } = moderateText(comment, { companyName: reviewVendor?.companyName || '' });
     if (!approved) {
       return next(new AppError(
         `Review contains prohibited content: ${reasons[0]}`,
@@ -398,7 +403,16 @@ const EditReview = catchAsync(async (req, res, next) => {
 
   // ── Text content moderation (same detection as service description) ──
   if (req.body.comment) {
-    const { approved, reasons } = moderateText(req.body.comment);
+    // Get the vendor's company name via the review's booking → service → vendorId
+    let editVendorCompanyName = '';
+    if (review.reviewOn) {
+      const reviewBooking = await Bookings.findById(review.reviewOn).populate({ path: 'service', select: 'vendorId' }).lean();
+      if (reviewBooking?.service?.vendorId) {
+        const editVendor = await User.findById(reviewBooking.service.vendorId).select('companyName').lean();
+        editVendorCompanyName = editVendor?.companyName || '';
+      }
+    }
+    const { approved, reasons } = moderateText(req.body.comment, { companyName: editVendorCompanyName });
     if (!approved) {
       return next(new AppError(
         `Review contains prohibited content: ${reasons[0]}`,

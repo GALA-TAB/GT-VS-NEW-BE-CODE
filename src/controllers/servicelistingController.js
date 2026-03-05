@@ -633,11 +633,15 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
   const vendorId = req.user._id;
   const serviceListingId = req.params.id;
 
+  // Look up vendor's company name for moderation
+  const vendor = await User.findById(vendorId).select('companyName').lean();
+  const companyName = vendor?.companyName || '';
+
   // ── Text content moderation ──
   const textFields = ['title', 'description', 'additionalInfo', 'spaceTitle', 'keyword'];
   for (const field of textFields) {
     if (req.body[field]) {
-      const { approved, reasons } = moderateText(req.body[field]);
+      const { approved, reasons } = moderateText(req.body[field], { companyName });
       if (!approved) {
         return next(new AppError(
           `The ${field} contains prohibited content: ${reasons[0]}`,
@@ -774,10 +778,13 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
   } = req.body;
 
   // ── Text content moderation ──
+  const vendorForMod = await User.findById(req.user._id).select('companyName').lean();
+  const vendorCompanyName = vendorForMod?.companyName || '';
+
   const textToCheck = { title, description, spaceTitle, additionalInfo, keyword };
   for (const [field, value] of Object.entries(textToCheck)) {
     if (value) {
-      const { approved, reasons } = moderateText(value);
+      const { approved, reasons } = moderateText(value, { companyName: vendorCompanyName });
       if (!approved) {
         return next(new AppError(
           `The ${field} contains prohibited content: ${reasons[0]}`,
