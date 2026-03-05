@@ -858,15 +858,26 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
       }
     }
 
-    /* ── 1. Metadata GPS check (images + videos — EXIF) ──── */
-    const metaReasons = inspectMetadata(buffer);
-    if (metaReasons.length > 0) reasons.push(...metaReasons);
+    /* ── 1. Metadata GPS check (images only — EXIF) ────────
+     *  EXIF is a JPEG/TIFF-only standard.  Video containers
+     *  (MP4, MOV, WebM) use different metadata formats and
+     *  exif-parser will misread random bytes as GPS tags,
+     *  causing false rejections on clean videos.
+     * ─────────────────────────────────────────────────────── */
+    if (isImage) {
+      const metaReasons = inspectMetadata(buffer);
+      if (metaReasons.length > 0) reasons.push(...metaReasons);
+    }
 
     /* ── 2. Video-specific processing (optional — requires ffmpeg) ── */
     let framePaths = [];
     let framesDir = null;
 
     if (isVideo) {
+      // Ensure mutedVideoBuffer is always set so S3 upload works
+      // even if ffmpeg muting fails or is unavailable
+      mutedVideoBuffer = buffer;
+
       // Write video to temp file for ffmpeg
       const videoTmp = tmpFile(path.extname(originalName) || '.mp4');
       fs.writeFileSync(videoTmp, buffer);
@@ -936,6 +947,10 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
 
     /* ── 4. OCR analysis (photos + video frames) ───────────── */
     const allImages = isVideo ? framePaths : [buffer];
+
+    if (isVideo && allImages.length === 0) {
+      console.log('[mediaModeration] No video frames extracted — skipping OCR, approving video');
+    }
 
     for (let i = 0; i < allImages.length; i++) {
       try {
