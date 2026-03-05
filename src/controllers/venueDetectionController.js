@@ -279,15 +279,19 @@ exports.checkContent = catchAsync(async (req, res, next) => {
     });
   }
 
+  // When content filtering is enabled, ALL detection categories run.
+  // Individual toggles are no longer used — the master toggle controls everything.
   const scanOptions = {
-    checkPhoneNumbers:    cf.blockPhoneNumbers !== false,
-    checkEmails:          cf.blockEmails !== false,
-    checkSocialHandles:   cf.blockSocialHandles !== false,
-    checkLinks:           cf.blockLinks !== false,
-    checkIntentPhrases:   cf.blockIntentPhrases !== false,
-    checkPaymentInfo:     cf.blockPaymentInfo !== false,
-    checkLocationIdentity: cf.blockLocationIdentity !== false,    checkProfanity:        cf.blockProfanity !== false,    checkBannedWords:     cf.blockBannedWords !== false,
-    bannedWords:          cf.bannedWords || [],
+    checkPhoneNumbers:     true,
+    checkEmails:           true,
+    checkSocialHandles:    true,
+    checkLinks:            true,
+    checkIntentPhrases:    true,
+    checkPaymentInfo:      true,
+    checkLocationIdentity: true,
+    checkProfanity:        true,
+    checkBannedWords:      true,
+    bannedWords:           cf.bannedWords || [],
   };
 
   const results = texts.map((t) => scanContent(String(t), scanOptions));
