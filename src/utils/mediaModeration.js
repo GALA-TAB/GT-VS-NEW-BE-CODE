@@ -199,25 +199,53 @@ function normalizeNumberWords(text) {
 /**
  * Run OCR on an image buffer with preprocessing for better accuracy.
  *
- * OCR is used ONLY for video frames (not photos) to avoid slow uploads
- * and false positives from Tesseract reading noise in regular photographs.
+ * Three preprocessing variants for maximum text extraction:
+ *   1. Standard grayscale → threshold (dark text on light backgrounds)
+ *   2. Red channel extraction → threshold (white/yellow text on GREEN/BLUE signs)
+ *   3. Inverted grayscale → threshold (general light-on-dark text)
  *
- * Preprocessing with sharp:
- *   1. Resize to 800px (small = fast)
- *   2. Grayscale + normalize + sharpen + threshold (single variant)
+ * The red channel variant is the key addition for colored signs:
+ *   - Green signs (#006B3F): red=0 → background is black; white text red=255 → text is white
+ *   - Blue signs (#003DA5): red=0 → background is black; white text red=255 → text is white
+ *   - Yellow text (#FFCC00): red=255 → text stays bright even on green background
+ *
+ * Uses a total time budget (not per-variant) so slow Render cold starts
+ * don't waste the entire timeout on one variant.
  */
 let ocrWorker = null;
+let ocrWorkerInitializing = false;
 
 async function getOcrWorker() {
+  if (!ocrWorker && !ocrWorkerInitializing) {
+    ocrWorkerInitializing = true;
+    try {
+      const { createWorker } = require('tesseract.js');
+      ocrWorker = await createWorker('eng');
+      console.log('[mediaModeration] Tesseract OCR worker ready');
+    } catch (err) {
+      console.error('[mediaModeration] OCR worker init failed:', err.message);
+      ocrWorkerInitializing = false;
+      throw err;
+    }
+  }
+  // If another call is already initializing, wait for it
   if (!ocrWorker) {
-    const { createWorker } = require('tesseract.js');
-    ocrWorker = await createWorker('eng');
-    console.log('[mediaModeration] Tesseract OCR worker ready');
+    const start = Date.now();
+    while (!ocrWorker && Date.now() - start < 15000) {
+      await new Promise(r => setTimeout(r, 200));
+    }
   }
   return ocrWorker;
 }
 
-const OCR_TIMEOUT_MS = 8000; // 8 seconds max per image
+// Pre-initialize OCR worker in background so first upload doesn't bear the full cost
+setTimeout(() => {
+  getOcrWorker().catch(err =>
+    console.error('[mediaModeration] Background OCR init failed:', err.message)
+  );
+}, 2000); // 2s after server start
+
+const OCR_TOTAL_TIMEOUT_MS = 15000; // 15 seconds total budget for all variants
 
 async function ocrImage(bufferOrPath) {
   const sharp = require('sharp');
@@ -239,8 +267,8 @@ async function ocrImage(bufferOrPath) {
   const targetW = Math.min((metadata.width || 800) * scale, 2000);
   const targetH = Math.min((metadata.height || 800) * scale, 2000);
 
-  // Single variant: grayscale + normalize + sharpen + threshold
-  const processed = await sharp(imgBuffer)
+  // Variant 1: Standard grayscale → threshold (dark text on light bg)
+  const normal = await sharp(imgBuffer)
     .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
     .grayscale()
     .normalize()
@@ -249,24 +277,59 @@ async function ocrImage(bufferOrPath) {
     .png()
     .toBuffer();
 
-  // Inverted variant: catches white/yellow text on dark/green/blue sign backgrounds
-  const inverted = await sharp(imgBuffer)
+  // Variant 2: Red channel extraction — best for GREEN/BLUE sign detection
+  // White text (R=255) vs green bg (R≈0) → maximum contrast in red channel
+  // Yellow text (#FFCC00, R=255) on green → also perfect contrast in red channel
+  // Lower threshold (60) preserves JPEG-compressed text edges
+  let redChannel = null;
+  try {
+    redChannel = await sharp(imgBuffer)
+      .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
+      .removeAlpha()
+      .extractChannel('red')
+      .normalize()
+      .sharpen({ sigma: 1.5 })
+      .threshold(60)
+      .png()
+      .toBuffer();
+  } catch (err) {
+    console.log(`[mediaModeration] Red channel variant failed: ${err.message}`);
+  }
+
+  // Variant 3: Grayscale WITHOUT threshold — preserves anti-aliased text edges
+  // Tesseract handles grayscale images well; binary thresholding can destroy
+  // fine text details especially on colored backgrounds with JPEG compression
+  const softGray = await sharp(imgBuffer)
     .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
     .grayscale()
     .normalize()
-    .sharpen({ sigma: 1.5 })
-    .negate()
-    .threshold(128)
+    .sharpen({ sigma: 2 })
     .png()
     .toBuffer();
+
+  // Build variant list — 3 variants optimized for different sign types
+  const variants = [
+    { name: 'normal', buf: normal },
+  ];
+  if (redChannel) variants.push({ name: 'red-channel', buf: redChannel });
+  variants.push({ name: 'soft-gray', buf: softGray });
 
   const allText = new Set();
-  for (const variant of [processed, inverted]) {
+  const startTime = Date.now();
+
+  for (const { name, buf } of variants) {
+    // Check total time budget
+    const elapsed = Date.now() - startTime;
+    const remaining = OCR_TOTAL_TIMEOUT_MS - elapsed;
+    if (remaining <= 1000) {
+      console.log(`[mediaModeration] OCR time budget exhausted after ${elapsed}ms, skipping remaining variants`);
+      break;
+    }
+
     try {
-      // Race OCR against timeout — if Tesseract takes too long, skip it
-      const ocrPromise = worker.recognize(variant);
+      const ocrPromise = worker.recognize(buf);
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('OCR timeout')), OCR_TIMEOUT_MS)
+        setTimeout(() => reject(new Error(`OCR timeout (${name})`)), remaining)
       );
       const { data: { text } } = await Promise.race([ocrPromise, timeoutPromise]);
       if (text && text.trim().length > 0) {
@@ -276,14 +339,14 @@ async function ocrImage(bufferOrPath) {
         }
       }
     } catch (err) {
-      console.log(`[mediaModeration] OCR variant skipped: ${err.message}`);
+      console.log(`[mediaModeration] OCR variant '${name}' skipped: ${err.message}`);
     }
   }
 
   const merged = [...allText].join('\n');
 
   if (merged.length > 0) {
-    console.log(`[mediaModeration] OCR extracted ${merged.split('\n').length} text lines (${merged.length} chars)`);
+    console.log(`[mediaModeration] OCR extracted ${merged.split('\n').length} text lines (${merged.length} chars) in ${Date.now() - startTime}ms`);
     console.log(`[mediaModeration] OCR text preview: "${merged.slice(0, 200)}${merged.length > 200 ? '…' : ''}"`);
   }
   return merged;
@@ -548,19 +611,20 @@ const SIGN_PATTERNS = [
   },
   // Street signs / road name patterns
   // Named roads: "Main St", "Oak Avenue", "Sunset Blvd", etc.
+  // \w{0,2} after suffix allows 1-2 trailing OCR garbage chars (e.g. "Avenuer")
   {
     category: 'Street sign',
-    pattern: /\b[A-Z][a-zA-Z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|pike|trail|crossing|loop)\b/gi,
+    pattern: /\b[A-Z][a-zA-Z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|pike|trail|crossing|loop)\w{0,2}\b/gi,
   },
   // Numbered streets: "5th Ave", "42nd Street", "1st St", "3rd Rd"
   {
     category: 'Street sign',
-    pattern: /\b\d{1,5}(?:st|nd|rd|th)\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|pike|trail|crossing|loop)\b/gi,
+    pattern: /\b\d{1,5}(?:st|nd|rd|th)\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|pike|trail|crossing|loop)\w{0,2}\b/gi,
   },
   // Directional prefix streets: "North Main St", "E 42nd St", "SW 8th Street"
   {
     category: 'Street sign',
-    pattern: /\b(?:n(?:orth)?|s(?:outh)?|e(?:ast)?|w(?:est)?|ne|nw|se|sw)\.?\s+(?:\d{1,5}(?:st|nd|rd|th)?\s+)?[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|hwy|highway|terr(?:ace)?|pike|trail|crossing|loop)\b/gi,
+    pattern: /\b(?:n(?:orth)?|s(?:outh)?|e(?:ast)?|w(?:est)?|ne|nw|se|sw)\.?\s+(?:\d{1,5}(?:st|nd|rd|th)?\s+)?[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|hwy|highway|terr(?:ace)?|pike|trail|crossing|loop)\w{0,2}\b/gi,
   },
   // "One Way", "Do Not Enter", "Stop", "Yield", "No Parking", "Speed Limit"
   {
@@ -575,6 +639,18 @@ const SIGN_PATTERNS = [
 ];
 
 /**
+ * Clean OCR text for better sign/contact detection.
+ * Removes common OCR noise characters while preserving meaningful text.
+ */
+function cleanOcrText(text) {
+  return text
+    .replace(/[|\\{}[\]<>~`^]+/g, ' ')   // Remove OCR pipe/bracket noise
+    .replace(/[^\w\s@#$%.,:;!?'"-]/g, '') // Keep only common text chars
+    .replace(/\s{2,}/g, ' ')              // Collapse multiple spaces
+    .trim();
+}
+
+/**
  * Detect storefront signs, street signs, and location-identifying text.
  * Returns an array of reason strings (empty = no sign detected).
  */
@@ -584,16 +660,23 @@ function detectSignsAndStorefronts(text) {
   const reasons = [];
   const seenCategories = new Set();
 
+  // Test against both raw and cleaned OCR text for better matching
+  const cleaned = cleanOcrText(text);
+  const textVariants = [text, cleaned];
+
   for (const { category, pattern } of SIGN_PATTERNS) {
     if (seenCategories.has(category)) continue;
-    const re = new RegExp(pattern.source, pattern.flags);
-    const match = text.match(re);
-    if (match && match.length > 0) {
-      const snippet = match[0].length > 45 ? match[0].slice(0, 42) + '…' : match[0];
-      reasons.push(
-        `${category} detected: "${snippet}". Photos of storefronts, street signs, and location-identifying signage are not allowed.`
-      );
-      seenCategories.add(category);
+    for (const src of textVariants) {
+      const re = new RegExp(pattern.source, pattern.flags);
+      const match = src.match(re);
+      if (match && match.length > 0) {
+        const snippet = match[0].length > 45 ? match[0].slice(0, 42) + '…' : match[0];
+        reasons.push(
+          `${category} detected: "${snippet}". Photos of storefronts, street signs, and location-identifying signage are not allowed.`
+        );
+        seenCategories.add(category);
+        break; // next pattern
+      }
     }
   }
 
