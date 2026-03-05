@@ -260,7 +260,7 @@ exports.generateAllTitles = catchAsync(async (req, res, next) => {
  * before allowing "Next" / "Save").
  * ─────────────────────────────────────────────────────── */
 exports.checkContent = catchAsync(async (req, res, next) => {
-  let { texts, serviceListingId } = req.body;
+  let { texts, serviceListingId, vendorId: bodyVendorId } = req.body;
   if (!texts) return next(new AppError('Please provide texts to check', 400));
 
   // Normalise to array
@@ -296,6 +296,25 @@ exports.checkContent = catchAsync(async (req, res, next) => {
       }
     } catch (e) {
       console.log('[checkContent] listing lookup failed:', e.message);
+    }
+  }
+
+  // 1b. Direct vendorId fallback — used when service hasn't been created yet
+  //     (e.g. admin is on an early step of the stepper before the listing exists)
+  if (bodyVendorId && !seenUserIds.has(String(bodyVendorId))) {
+    try {
+      const directVendor = await User.findById(bodyVendorId)
+        .select('companyName firstName lastName email').lean();
+      console.log('[checkContent] direct vendorId lookup', bodyVendorId,
+        '=> companyName:', JSON.stringify(directVendor?.companyName),
+        'firstName:', JSON.stringify(directVendor?.firstName),
+        'lastName:', JSON.stringify(directVendor?.lastName));
+      if (directVendor?.companyName) vendorNamesToBlock.push(directVendor.companyName);
+      const fullName = [directVendor?.firstName, directVendor?.lastName].filter(Boolean).join(' ');
+      if (fullName.trim()) vendorNamesToBlock.push(fullName);
+      seenUserIds.add(String(bodyVendorId));
+    } catch (e) {
+      console.log('[checkContent] direct vendorId lookup failed:', e.message);
     }
   }
 
