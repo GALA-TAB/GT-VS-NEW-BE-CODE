@@ -1715,7 +1715,7 @@ const getServiceListing = catchAsync(async (req, res, next) => {
               country: 1,
               state: 1,
               city: 1,
-              mailingAddress: 1,
+              address: 1,
             }
           }
         ]
