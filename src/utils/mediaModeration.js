@@ -249,22 +249,38 @@ async function ocrImage(bufferOrPath) {
     .png()
     .toBuffer();
 
-  let merged = '';
-  try {
-    // Race OCR against timeout — if Tesseract takes too long, skip it
-    const ocrPromise = worker.recognize(processed);
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('OCR timeout')), OCR_TIMEOUT_MS)
-    );
-    const { data: { text } } = await Promise.race([ocrPromise, timeoutPromise]);
-    if (text && text.trim().length > 0) {
-      const lines = text.split('\n').map(l => l.trim()).filter(l => l.length >= 2);
-      merged = lines.join('\n');
+  // Inverted variant: catches white/yellow text on dark/green/blue sign backgrounds
+  const inverted = await sharp(imgBuffer)
+    .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
+    .grayscale()
+    .normalize()
+    .sharpen({ sigma: 1.5 })
+    .negate()
+    .threshold(128)
+    .png()
+    .toBuffer();
+
+  const allText = new Set();
+  for (const variant of [processed, inverted]) {
+    try {
+      // Race OCR against timeout — if Tesseract takes too long, skip it
+      const ocrPromise = worker.recognize(variant);
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('OCR timeout')), OCR_TIMEOUT_MS)
+      );
+      const { data: { text } } = await Promise.race([ocrPromise, timeoutPromise]);
+      if (text && text.trim().length > 0) {
+        for (const line of text.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed.length >= 2) allText.add(trimmed);
+        }
+      }
+    } catch (err) {
+      console.log(`[mediaModeration] OCR variant skipped: ${err.message}`);
     }
-  } catch (err) {
-    console.log(`[mediaModeration] OCR skipped: ${err.message}`);
-    return ''; // timeout or error → approve the image (no text found)
   }
+
+  const merged = [...allText].join('\n');
 
   if (merged.length > 0) {
     console.log(`[mediaModeration] OCR extracted ${merged.split('\n').length} text lines (${merged.length} chars)`);
@@ -442,6 +458,17 @@ function isLikelyRealText(text) {
   if (/https?:\/\/|www\./i.test(text)) return true;
 
   return false;
+}
+
+/**
+ * Lighter quality gate for sign detection.
+ * Street signs often have very short text ("Main St", "5th Ave", "One Way")
+ * so we only need 1 real word of 3+ letters.
+ */
+function isLikelySignText(text) {
+  if (!text || text.trim().length < 3) return false;
+  const realWords = text.match(/[a-zA-Z]{3,}/g) || [];
+  return realWords.length >= 1;
 }
 
 /**
@@ -675,16 +702,25 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
     for (let i = 0; i < allImages.length; i++) {
       try {
         const ocrText = await ocrImage(allImages[i]);
-        if (ocrText.trim().length > 0 && isLikelyRealText(ocrText)) {
-          const contactReasons = detectContactInfo(ocrText);
-          if (contactReasons.length > 0) {
-            console.log(`[mediaModeration] Contact info in ${isVideo ? `frame ${i + 1}` : 'image'}:`, contactReasons);
-            reasons.push(...contactReasons);
+        if (ocrText.trim().length > 0) {
+          // Sign detection uses a lighter quality gate (1+ real words)
+          // because street signs have short text like "Main St"
+          if (isLikelySignText(ocrText)) {
+            const signReasons = detectSignsAndStorefronts(ocrText);
+            if (signReasons.length > 0) {
+              console.log(`[mediaModeration] Sign text in ${isVideo ? `frame ${i + 1}` : 'image'}:`, signReasons);
+              reasons.push(...signReasons);
+            }
           }
-          const signReasons = detectSignsAndStorefronts(ocrText);
-          if (signReasons.length > 0) {
-            console.log(`[mediaModeration] Sign text in ${isVideo ? `frame ${i + 1}` : 'image'}:`, signReasons);
-            reasons.push(...signReasons);
+
+          // Contact detection uses the stricter quality gate (3+ real words)
+          // to avoid false positives from OCR noise
+          if (isLikelyRealText(ocrText)) {
+            const contactReasons = detectContactInfo(ocrText);
+            if (contactReasons.length > 0) {
+              console.log(`[mediaModeration] Contact info in ${isVideo ? `frame ${i + 1}` : 'image'}:`, contactReasons);
+              reasons.push(...contactReasons);
+            }
           }
         }
       } catch (err) {
