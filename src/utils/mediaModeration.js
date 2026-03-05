@@ -844,13 +844,21 @@ function normForFuzzy(str) {
     .replace(/[^a-z]/g, '');          // keep only letters
 }
 
-/** Common business-name suffixes to strip before matching */
-const BUSINESS_SUFFIXES_RE = /\b(llc|inc|incorporated|corp|corporation|co|company|ltd|limited|lp|llp|pllc|pc|plc|gmbh|sa|ag|group|enterprises?|solutions?|services?|studios?|productions?|entertainment|events?|consulting|management|agency|associates?|partners?|ventures?|nyc|la|sf|atl|chi|dc|bklyn|brooklyn|miami|dallas|houston|seattle|denver|boston|philly|tampa|orlando|atlanta|portland|austin|nashville|charlotte|detroit|phoenix|vegas|nola|worldwide|global|usa|international|intl|of|the|and)\b/gi;
+/* ── Legal-entity suffixes (always safe to strip) ── */
+const LEGAL_SUFFIX_RE = /\b(llc|inc|incorporated|corp|corporation|co|company|ltd|limited|lp|llp|pllc|pc|plc|gmbh|sa|ag)\b/gi;
+
+/* ── Location qualifiers (safe to strip) ── */
+const LOCATION_QUALIFIER_RE = /\b(nyc|la|sf|atl|chi|dc|bklyn|brooklyn|miami|dallas|houston|seattle|denver|boston|philly|tampa|orlando|atlanta|portland|austin|nashville|charlotte|detroit|phoenix|vegas|nola)\b/gi;
+
+/* ── Filler / connector words ── */
+const FILLER_WORDS_RE = /\b(of|the|and|worldwide|global|usa|international|intl)\b/gi;
 
 /**
- * Strip business suffixes and common location qualifiers from a name,
- * returning all unique variants.
- * E.g. "Party Setups NYC LLC" → ["Party Setups NYC LLC", "Party Setups"]
+ * Build name variants by progressively stripping legal suffixes,
+ * location qualifiers, and fillers.
+ *
+ * "Party Setups NYC LLC"  →  ["Party Setups NYC LLC", "Party Setups NYC", "Party Setups"]
+ * "Amazing Events"        →  ["Amazing Events"]  (nothing stripped — "Events" is NOT a legal suffix)
  */
 function getNameVariants(name) {
   const seen = new Set();
@@ -865,38 +873,69 @@ function getNameVariants(name) {
 
   add(name);
 
-  // Iteratively strip suffixes until stable
-  let prev = name;
-  for (let round = 0; round < 3; round++) {
-    const stripped = prev.replace(BUSINESS_SUFFIXES_RE, '').replace(/\s+/g, ' ').trim();
-    if (!stripped || stripped.toLowerCase() === prev.toLowerCase()) break;
-    add(stripped);
-    prev = stripped;
+  // Pass 1 — legal suffixes (LLC, Inc, Corp …)
+  let cur = name;
+  for (let i = 0; i < 3; i++) {
+    const s = cur.replace(LEGAL_SUFFIX_RE, '').replace(/\s+/g, ' ').trim();
+    if (!s || s.toLowerCase() === cur.toLowerCase()) break;
+    add(s); cur = s;
+  }
+
+  // Pass 2 — location qualifiers (NYC, ATL …)
+  for (let i = 0; i < 2; i++) {
+    const s = cur.replace(LOCATION_QUALIFIER_RE, '').replace(/\s+/g, ' ').trim();
+    if (!s || s.toLowerCase() === cur.toLowerCase()) break;
+    add(s); cur = s;
+  }
+
+  // Pass 3 — filler words (of, the, and …)
+  {
+    const s = cur.replace(FILLER_WORDS_RE, '').replace(/\s+/g, ' ').trim();
+    if (s && s.toLowerCase() !== cur.toLowerCase() && s.length >= 2) {
+      add(s);
+    }
   }
 
   return variants;
 }
 
+/* ── Helper: check if a single normalised word appears in normText (fuzzy) ── */
+function wordAppearsInText(normWord, normText) {
+  if (normWord.length < 2) return false;
+  // Direct substring
+  if (normText.includes(normWord)) return true;
+  // Sliding-window Levenshtein (tolerance 1 for all word-level checks)
+  const tol = normWord.length <= 3 ? 0 : 1;
+  for (const delta of [0, -1, 1]) {
+    const wl = normWord.length + delta;
+    if (wl < 2) continue;
+    for (let i = 0; i <= normText.length - wl; i++) {
+      if (levenshtein(normText.substring(i, i + wl), normWord) <= tol) return true;
+    }
+  }
+  return false;
+}
+
 function detectCompanyName(text, companyName) {
   if (!companyName || typeof companyName !== 'string') return [];
   const cn = companyName.trim();
-  if (cn.length < 2) return [];                       // too short to be meaningful
+  if (cn.length < 2) return [];
 
-  // Build variants: original name + name without business suffixes
   const variants = getNameVariants(cn);
   const normText = normForFuzzy(text);
 
+  // ── Phase A: Full-phrase matching (per variant) ──
   for (const variant of variants) {
     const normCN = normForFuzzy(variant);
     if (normCN.length < 2) continue;
 
-    // ── 1. Direct normalised substring match ──
+    // 1. Direct normalised substring
     if (normText.includes(normCN)) {
       return ['Text contains the vendor company name'];
     }
 
-    // ── 2. Sliding-window Levenshtein on the normalised text ──
-    const maxDist = normCN.length <= 5 ? 1 : 2;        // tolerance
+    // 2. Sliding-window Levenshtein
+    const maxDist = normCN.length <= 5 ? 1 : 2;
     const winLen  = normCN.length;
     for (let i = 0; i <= normText.length - winLen; i++) {
       const window = normText.substring(i, i + winLen);
@@ -905,8 +944,8 @@ function detectCompanyName(text, companyName) {
       }
     }
 
-    // ── 3. Also check windows that are ±1 char longer/shorter ──
-    for (const delta of [-1, 1]) {
+    // 3. Windows ±1 and ±2 chars (catches insertions / deletions)
+    for (const delta of [-2, -1, 1, 2]) {
       const wl = winLen + delta;
       if (wl < 2) continue;
       for (let i = 0; i <= normText.length - wl; i++) {
@@ -915,6 +954,23 @@ function detectCompanyName(text, companyName) {
           return ['Text contains a close variation of the vendor company name'];
         }
       }
+    }
+  }
+
+  // ── Phase B: Split-word matching ──
+  // If the company name has 2+ significant words and ALL of them appear
+  // individually in the text (with fuzzy matching), flag it.
+  // This catches "John … Smith" or "great … space" written apart.
+  const bestVariant = variants[variants.length - 1]; // most-stripped variant
+  const words = bestVariant
+    .split(/\s+/)
+    .map(w => normForFuzzy(w))
+    .filter(w => w.length >= 3);                       // skip tiny words like "dj", "of"
+
+  if (words.length >= 2) {
+    const allFound = words.every(w => wordAppearsInText(w, normText));
+    if (allFound) {
+      return ['Text contains individual words of the vendor company name'];
     }
   }
 
