@@ -685,7 +685,7 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
         return next(new AppError(
           `The ${field} contains prohibited content: ${reasons[0]}`,
           400,
-          { field, reasons }
+          { field, reasons, detectedWords: vendorNames }
         ));
       }
     }
@@ -702,7 +702,7 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
           return next(new AppError(
             `A custom amenity contains prohibited content: ${reasons[0]}`,
             400,
-            { field: 'customAmenities', reasons }
+            { field: 'customAmenities', reasons, detectedWords: vendorNames }
           ));
         }
       }
@@ -857,7 +857,7 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
         return next(new AppError(
           `The ${field} contains prohibited content: ${reasons[0]}`,
           400,
-          { field, reasons }
+          { field, reasons, detectedWords: vendorNames2 }
         ));
       }
     }
@@ -870,7 +870,7 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
       return next(new AppError(
         `The cancellation policy contains prohibited content: ${reasons[0]}`,
         400,
-        { field: 'cancellationPolicy', reasons }
+        { field: 'cancellationPolicy', reasons, detectedWords: vendorNames2 }
       ));
     }
   }
@@ -886,7 +886,7 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
           return next(new AppError(
             `A custom amenity contains prohibited content: ${reasons[0]}`,
             400,
-            { field: 'customAmenities', reasons }
+            { field: 'customAmenities', reasons, detectedWords: vendorNames2 }
           ));
         }
       }
