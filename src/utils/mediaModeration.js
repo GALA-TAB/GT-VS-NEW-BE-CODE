@@ -844,38 +844,76 @@ function normForFuzzy(str) {
     .replace(/[^a-z]/g, '');          // keep only letters
 }
 
+/** Common business-name suffixes to strip before matching */
+const BUSINESS_SUFFIXES_RE = /\b(llc|inc|incorporated|corp|corporation|co|company|ltd|limited|lp|llp|pllc|pc|plc|gmbh|sa|ag|group|enterprises?|solutions?|services?|studios?|productions?|entertainment|events?|consulting|management|agency|associates?|partners?|ventures?|nyc|la|sf|atl|chi|dc|bklyn|brooklyn|miami|dallas|houston|seattle|denver|boston|philly|tampa|orlando|atlanta|portland|austin|nashville|charlotte|detroit|phoenix|vegas|nola|worldwide|global|usa|international|intl|of|the|and)\b/gi;
+
+/**
+ * Strip business suffixes and common location qualifiers from a name,
+ * returning all unique variants.
+ * E.g. "Party Setups NYC LLC" → ["Party Setups NYC LLC", "Party Setups"]
+ */
+function getNameVariants(name) {
+  const seen = new Set();
+  const variants = [];
+  const add = (v) => {
+    const trimmed = v.replace(/\s+/g, ' ').trim();
+    if (trimmed.length >= 2 && !seen.has(trimmed.toLowerCase())) {
+      seen.add(trimmed.toLowerCase());
+      variants.push(trimmed);
+    }
+  };
+
+  add(name);
+
+  // Iteratively strip suffixes until stable
+  let prev = name;
+  for (let round = 0; round < 3; round++) {
+    const stripped = prev.replace(BUSINESS_SUFFIXES_RE, '').replace(/\s+/g, ' ').trim();
+    if (!stripped || stripped.toLowerCase() === prev.toLowerCase()) break;
+    add(stripped);
+    prev = stripped;
+  }
+
+  return variants;
+}
+
 function detectCompanyName(text, companyName) {
   if (!companyName || typeof companyName !== 'string') return [];
   const cn = companyName.trim();
   if (cn.length < 2) return [];                       // too short to be meaningful
 
-  const normCN   = normForFuzzy(cn);
+  // Build variants: original name + name without business suffixes
+  const variants = getNameVariants(cn);
   const normText = normForFuzzy(text);
-  if (normCN.length < 2) return [];
 
-  // ── 1. Direct normalised substring match ──
-  if (normText.includes(normCN)) {
-    return ['Text contains the vendor company name'];
-  }
+  for (const variant of variants) {
+    const normCN = normForFuzzy(variant);
+    if (normCN.length < 2) continue;
 
-  // ── 2. Sliding-window Levenshtein on the normalised text ──
-  const maxDist = normCN.length <= 5 ? 1 : 2;        // tolerance
-  const winLen  = normCN.length;
-  for (let i = 0; i <= normText.length - winLen; i++) {
-    const window = normText.substring(i, i + winLen);
-    if (levenshtein(window, normCN) <= maxDist) {
-      return ['Text contains a close variation of the vendor company name'];
+    // ── 1. Direct normalised substring match ──
+    if (normText.includes(normCN)) {
+      return ['Text contains the vendor company name'];
     }
-  }
 
-  // ── 3. Also check windows that are ±1 char longer/shorter ──
-  for (const delta of [-1, 1]) {
-    const wl = winLen + delta;
-    if (wl < 2) continue;
-    for (let i = 0; i <= normText.length - wl; i++) {
-      const window = normText.substring(i, i + wl);
+    // ── 2. Sliding-window Levenshtein on the normalised text ──
+    const maxDist = normCN.length <= 5 ? 1 : 2;        // tolerance
+    const winLen  = normCN.length;
+    for (let i = 0; i <= normText.length - winLen; i++) {
+      const window = normText.substring(i, i + winLen);
       if (levenshtein(window, normCN) <= maxDist) {
         return ['Text contains a close variation of the vendor company name'];
+      }
+    }
+
+    // ── 3. Also check windows that are ±1 char longer/shorter ──
+    for (const delta of [-1, 1]) {
+      const wl = winLen + delta;
+      if (wl < 2) continue;
+      for (let i = 0; i <= normText.length - wl; i++) {
+        const window = normText.substring(i, i + wl);
+        if (levenshtein(window, normCN) <= maxDist) {
+          return ['Text contains a close variation of the vendor company name'];
+        }
       }
     }
   }
