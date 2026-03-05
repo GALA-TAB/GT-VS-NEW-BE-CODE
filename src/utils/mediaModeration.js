@@ -419,8 +419,8 @@ const CONTACT_PATTERNS = [
   { category: CAT.PAYMENT, pattern: /(?:send|pay|transfer|wire)\s+(?:(?:money|payment)\s+)?(?:to|via|through|on)\s+(?:cash\s*app|venmo|zelle|pay\s*pal|apple\s*pay|google\s*pay)\b/gi },
   // "pay me" / "send deposit"
   { category: CAT.PAYMENT, pattern: /\b(?:pay\s+me|send\s+(?:me\s+)?(?:a\s+)?(?:deposit|payment|money))\b/gi },
-  // CashApp $tag (including spaced: "$ n a m e")
-  { category: CAT.PAYMENT, pattern: /\$\s*[a-zA-Z][a-zA-Z0-9_\s]{1,25}[a-zA-Z0-9]/gi },
+  // CashApp $tag — requires 3+ alphanumeric chars after $, no spaces (avoids OCR noise like "$NA")
+  { category: CAT.PAYMENT, pattern: /\$[a-zA-Z][a-zA-Z0-9_]{2,24}\b/g },
 
   /* ────────── 5. GIFT CARDS ────────── */
   { category: CAT.GIFT, pattern: /\b(?:gift\s*card|e-?gift|prepaid\s*card)\b/gi },
