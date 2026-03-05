@@ -247,7 +247,7 @@ setTimeout(() => {
 
 const OCR_TOTAL_TIMEOUT_MS = 15000; // 15 seconds total budget for all variants
 
-async function ocrImage(bufferOrPath) {
+async function ocrImage(bufferOrPath, { allVariants = false } = {}) {
   const sharp = require('sharp');
   const worker = await getOcrWorker();
 
@@ -268,6 +268,7 @@ async function ocrImage(bufferOrPath) {
   const targetH = Math.min((metadata.height || 800) * scale, 2000);
 
   // Variant 1: Standard grayscale → threshold (dark text on light bg)
+  // This is the ONLY variant used for photos to avoid false positives.
   const normal = await sharp(imgBuffer)
     .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
     .grayscale()
@@ -277,42 +278,41 @@ async function ocrImage(bufferOrPath) {
     .png()
     .toBuffer();
 
-  // Variant 2: Red channel extraction — best for GREEN/BLUE sign detection
-  // White text (R=255) vs green bg (R≈0) → maximum contrast in red channel
-  // Yellow text (#FFCC00, R=255) on green → also perfect contrast in red channel
-  // Lower threshold (60) preserves JPEG-compressed text edges
-  let redChannel = null;
-  try {
-    redChannel = await sharp(imgBuffer)
-      .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
-      .removeAlpha()
-      .extractChannel('red')
-      .normalize()
-      .sharpen({ sigma: 1.5 })
-      .threshold(60)
-      .png()
-      .toBuffer();
-  } catch (err) {
-    console.log(`[mediaModeration] Red channel variant failed: ${err.message}`);
-  }
-
-  // Variant 3: Grayscale WITHOUT threshold — preserves anti-aliased text edges
-  // Tesseract handles grayscale images well; binary thresholding can destroy
-  // fine text details especially on colored backgrounds with JPEG compression
-  const softGray = await sharp(imgBuffer)
-    .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
-    .grayscale()
-    .normalize()
-    .sharpen({ sigma: 2 })
-    .png()
-    .toBuffer();
-
-  // Build variant list — 3 variants optimized for different sign types
+  // Build variant list — for photos we only use the standard variant
+  // Extra variants produce too much OCR noise on regular photos
   const variants = [
     { name: 'normal', buf: normal },
   ];
-  if (redChannel) variants.push({ name: 'red-channel', buf: redChannel });
-  variants.push({ name: 'soft-gray', buf: softGray });
+
+  // Additional variants ONLY for video frames (allVariants=true)
+  // Video frames are pre-selected and have less noise than random photos
+  if (allVariants) {
+    // Red channel — best for GREEN/BLUE sign text
+    try {
+      const redChannel = await sharp(imgBuffer)
+        .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
+        .removeAlpha()
+        .extractChannel('red')
+        .normalize()
+        .sharpen({ sigma: 1.5 })
+        .threshold(60)
+        .png()
+        .toBuffer();
+      variants.push({ name: 'red-channel', buf: redChannel });
+    } catch (err) {
+      console.log(`[mediaModeration] Red channel variant failed: ${err.message}`);
+    }
+
+    // Soft grayscale — preserves anti-aliased text edges
+    const softGray = await sharp(imgBuffer)
+      .resize(targetW, targetH, { fit: 'inside', withoutEnlargement: false })
+      .grayscale()
+      .normalize()
+      .sharpen({ sigma: 2 })
+      .png()
+      .toBuffer();
+    variants.push({ name: 'soft-gray', buf: softGray });
+  }
 
   const allText = new Set();
   const startTime = Date.now();
@@ -524,14 +524,26 @@ function isLikelyRealText(text) {
 }
 
 /**
- * Lighter quality gate for sign detection.
- * Street signs often have very short text ("Main St", "5th Ave", "One Way")
- * so we only need 1 real word of 3+ letters.
+ * Quality gate for sign detection.
+ * Requires at least 2 real words of 3+ letters, OR a strong structural
+ * signal (e.g. a number followed by a suffix like "5th Ave").
+ *
+ * This is stricter than before (was 1 word) because regular photos
+ * produce OCR noise that frequently contains 1 random 3-letter word
+ * which then matches short street suffixes (st, rd, ct, ln) causing
+ * false positives.
  */
 function isLikelySignText(text) {
   if (!text || text.trim().length < 3) return false;
   const realWords = text.match(/[a-zA-Z]{3,}/g) || [];
-  return realWords.length >= 1;
+  // Need 2+ real words — catches "Carter Rd" (Carter=1 word, but Rd is only 2 chars)
+  // Actually "Carter" alone is 1 word — so we also check the full pattern match below
+  if (realWords.length >= 2) return true;
+  // 1 word is enough ONLY if there's also a number ("5th Ave", "Route 66")
+  if (realWords.length >= 1 && /\d/.test(text)) return true;
+  // 1 longer word (5+ chars) + a street suffix is also OK
+  if (realWords.length >= 1 && realWords.some(w => w.length >= 5)) return true;
+  return false;
 }
 
 /**
@@ -610,21 +622,28 @@ const SIGN_PATTERNS = [
     pattern: /\b\d{1,2}\s*(?::\d{2})?\s*(?:am|pm)\s*[-–—to]+\s*\d{1,2}\s*(?::\d{2})?\s*(?:am|pm)\b/gi,
   },
   // Street signs / road name patterns
-  // Named roads: "Main St", "Oak Avenue", "Sunset Blvd", etc.
-  // \w{0,2} after suffix allows 1-2 trailing OCR garbage chars (e.g. "Avenuer")
+  // Named roads: "Main Street", "Oak Avenue", "Sunset Blvd", etc.
+  // Full-word suffixes (street, avenue, road, etc.) — road name 3+ chars is enough
+  // since these long suffixes are very unlikely in OCR garbage
   {
     category: 'Street sign',
-    pattern: /\b[A-Z][a-zA-Z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|pike|trail|crossing|loop)\w{0,2}\b/gi,
+    pattern: /\b[A-Z][a-zA-Z]{2,}\s+(?:street|avenue|boulevard|drive|road|lane|court|place|circle|parkway|terrace|pike|trail|crossing|loop)\b/gi,
+  },
+  // Short abbreviated suffixes (st, ave, dr, rd, ln, ct, etc.) require 5+ char road name
+  // to avoid garbage like "An St" or "Er Rd" from OCR noise
+  {
+    category: 'Street sign',
+    pattern: /\b[A-Z][a-zA-Z]{4,}\s+(?:st|ave|blvd|dr|rd|ln|ct|pl|cir|pkwy|terr)\b/gi,
   },
   // Numbered streets: "5th Ave", "42nd Street", "1st St", "3rd Rd"
   {
     category: 'Street sign',
-    pattern: /\b\d{1,5}(?:st|nd|rd|th)\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|pike|trail|crossing|loop)\w{0,2}\b/gi,
+    pattern: /\b\d{1,5}(?:st|nd|rd|th)\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|pike|trail|crossing|loop)\b/gi,
   },
   // Directional prefix streets: "North Main St", "E 42nd St", "SW 8th Street"
   {
     category: 'Street sign',
-    pattern: /\b(?:n(?:orth)?|s(?:outh)?|e(?:ast)?|w(?:est)?|ne|nw|se|sw)\.?\s+(?:\d{1,5}(?:st|nd|rd|th)?\s+)?[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|hwy|highway|terr(?:ace)?|pike|trail|crossing|loop)\w{0,2}\b/gi,
+    pattern: /\b(?:n(?:orth)?|s(?:outh)?|e(?:ast)?|w(?:est)?|ne|nw|se|sw)\.?\s+(?:\d{1,5}(?:st|nd|rd|th)?\s+)?[A-Za-z]{3,}\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|hwy|highway|terr(?:ace)?|pike|trail|crossing|loop)\b/gi,
   },
   // "One Way", "Do Not Enter", "Stop", "Yield", "No Parking", "Speed Limit"
   {
@@ -784,7 +803,9 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
 
     for (let i = 0; i < allImages.length; i++) {
       try {
-        const ocrText = await ocrImage(allImages[i]);
+        // Photos: single fast OCR variant only (avoids false positives from noise)
+        // Video frames: all 3 variants (red channel etc.) for better sign detection
+        const ocrText = await ocrImage(allImages[i], { allVariants: isVideo });
         if (ocrText.trim().length > 0) {
           // Sign detection uses a lighter quality gate (1+ real words)
           // because street signs have short text like "Main St"
