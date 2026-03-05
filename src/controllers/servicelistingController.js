@@ -638,7 +638,7 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
   const companyName = vendor?.companyName || '';
 
   // ── Text content moderation ──
-  const textFields = ['title', 'description', 'additionalInfo', 'spaceTitle', 'keyword'];
+  const textFields = ['title', 'description', 'additionalInfo', 'spaceTitle', 'keyword', 'cancellationPolicy'];
   for (const field of textFields) {
     if (req.body[field]) {
       const { approved, reasons } = moderateText(req.body[field], { companyName });
@@ -648,6 +648,34 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
           400,
           { field, reasons }
         ));
+      }
+    }
+  }
+
+  // Check location address
+  if (req.body.location?.address) {
+    const { approved, reasons } = moderateText(req.body.location.address, { companyName });
+    if (!approved) {
+      return next(new AppError(
+        `The address contains prohibited content: ${reasons[0]}`,
+        400,
+        { field: 'address', reasons }
+      ));
+    }
+  }
+
+  // Check custom amenities (array of strings)
+  if (Array.isArray(req.body.customAmenities)) {
+    for (const amenity of req.body.customAmenities) {
+      if (amenity && typeof amenity === 'string') {
+        const { approved, reasons } = moderateText(amenity, { companyName });
+        if (!approved) {
+          return next(new AppError(
+            `A custom amenity contains prohibited content: ${reasons[0]}`,
+            400,
+            { field: 'customAmenities', reasons }
+          ));
+        }
       }
     }
   }
@@ -791,6 +819,46 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
           400,
           { field, reasons }
         ));
+      }
+    }
+  }
+
+  // Check cancellation policy
+  if (req.body.cancellationPolicy) {
+    const { approved, reasons } = moderateText(req.body.cancellationPolicy, { companyName: vendorCompanyName });
+    if (!approved) {
+      return next(new AppError(
+        `The cancellation policy contains prohibited content: ${reasons[0]}`,
+        400,
+        { field: 'cancellationPolicy', reasons }
+      ));
+    }
+  }
+
+  // Check location address
+  if (location?.address) {
+    const { approved, reasons } = moderateText(location.address, { companyName: vendorCompanyName });
+    if (!approved) {
+      return next(new AppError(
+        `The address contains prohibited content: ${reasons[0]}`,
+        400,
+        { field: 'address', reasons }
+      ));
+    }
+  }
+
+  // Check custom amenities (array of strings)
+  if (Array.isArray(req.body.customAmenities)) {
+    for (const amenity of req.body.customAmenities) {
+      if (amenity && typeof amenity === 'string') {
+        const { approved, reasons } = moderateText(amenity, { companyName: vendorCompanyName });
+        if (!approved) {
+          return next(new AppError(
+            `A custom amenity contains prohibited content: ${reasons[0]}`,
+            400,
+            { field: 'customAmenities', reasons }
+          ));
+        }
       }
     }
   }
