@@ -630,13 +630,42 @@ const createServiceListing = catchAsync(async (req, res, next) => {
 });
 
 const updateServiceListing = catchAsync(async (req, res, next) => {
-  const vendorId = req.user._id;
+  const currentUserId = req.user._id;
   const serviceListingId = req.params.id;
 
+  if (!serviceListingId) {
+    return next(
+      new AppError('serviceListingId not found', 400, {
+        serviceListingId: 'Service Listing Id not found'
+      })
+    );
+  }
+
+  // Find the listing first so we know the actual vendor who owns it
+  const query = {
+    _id: new mongoose.Types.ObjectId(serviceListingId)
+  };
+
+  if (req.user.role === 'vendor') {
+    query.vendorId = currentUserId;
+  }
+
+  console.log('query', query);
+
+  const findingServiceListing = await ServiceListing.findOne(query);
+
+  if (!findingServiceListing) {
+    return next(new AppError('No service listing found with this ID.', 404));
+  }
+
+  // Use the listing's vendorId (not req.user._id) for moderation
+  // so that when admin edits, we still check the actual vendor's name
+  const actualVendorId = findingServiceListing.vendorId;
+
   // Look up vendor's names for moderation (companyName + fullName)
-  const vendor = await User.findById(vendorId)
+  const vendor = await User.findById(actualVendorId)
     .select('companyName firstName lastName email').lean();
-  console.log('[updateServiceListing] vendor lookup', vendorId,
+  console.log('[updateServiceListing] vendor lookup', actualVendorId,
     '=> companyName:', JSON.stringify(vendor?.companyName),
     'firstName:', JSON.stringify(vendor?.firstName),
     'lastName:', JSON.stringify(vendor?.lastName),
@@ -678,29 +707,6 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
         }
       }
     }
-  }
-
-  const query = {
-    _id: new mongoose.Types.ObjectId(serviceListingId)
-  };
-
-  if (!serviceListingId) {
-    return next(
-      new AppError('serviceListingId not found', 400, {
-        serviceListingId: 'Service Listing Id not found'
-      })
-    );
-  }
-
-  if (req.user.role === 'vendor') {
-    query.vendorId = vendorId;
-  }
-
-  console.log('query', query);
-
-  const findingServiceListing = await ServiceListing.findOne(query);
-  if (!findingServiceListing) {
-    return next(new AppError('No service listing found with this ID.', 404));
   }
 
   const { error } = serviceupdateSchema.validate(req.body, {
@@ -781,6 +787,30 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
 });
 
 const updateServiceDetail = catchAsync(async (req, res, next) => {
+  const currentUserId = req.user._id;
+  const serviceListingId = req.params.id;
+
+  if (!serviceListingId) {
+    return next(
+      new AppError('serviceListingId not found', 400, {
+        serviceListingId: 'Service Listing Id not found'
+      })
+    );
+  }
+
+  // Find the listing first so we know the actual vendor who owns it
+  const detailQuery = { _id: serviceListingId };
+  if (req.user.role === 'vendor') {
+    detailQuery.vendorId = currentUserId;
+  }
+  const existingListing = await ServiceListing.findOne(detailQuery).lean();
+  if (!existingListing) {
+    return next(new AppError('No service listing found with this ID.', 404));
+  }
+
+  // Use the listing's vendorId (not req.user._id) for moderation
+  const actualVendorId = existingListing.vendorId;
+
   const {
     title,
     description,
@@ -806,9 +836,9 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
   } = req.body;
 
   // ── Text content moderation ──
-  const vendorForMod = await User.findById(req.user._id)
+  const vendorForMod = await User.findById(actualVendorId)
     .select('companyName firstName lastName email').lean();
-  console.log('[updateServiceDetail] vendor lookup', req.user._id,
+  console.log('[updateServiceDetail] vendor lookup', actualVendorId,
     '=> companyName:', JSON.stringify(vendorForMod?.companyName),
     'firstName:', JSON.stringify(vendorForMod?.firstName),
     'lastName:', JSON.stringify(vendorForMod?.lastName),
@@ -863,17 +893,6 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     }
   }
 
-  const vendorId = req.user._id;
-  const serviceListingId = req.params.id;
-
-  if (!serviceListingId) {
-    return next(
-      new AppError('serviceListingId not found', 400, {
-        serviceListingId: 'Service Listing Id not found'
-      })
-    );
-  }
-
   let validationSchema = Joi.object().min(1);
   const validationData = {};
 
@@ -923,7 +942,7 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
   }
 
   const serviceListing = await ServiceListing.findOneAndUpdate(
-    { _id: serviceListingId, vendorId },
+    detailQuery,
     req.body,
     {
       new: true,
