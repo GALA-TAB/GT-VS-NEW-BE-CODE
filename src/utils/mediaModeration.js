@@ -858,13 +858,11 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
       }
     }
 
-    /* ── 1. Metadata GPS check (images only — EXIF) ─────── */
-    if (isImage) {
-      const metaReasons = inspectMetadata(buffer);
-      if (metaReasons.length > 0) reasons.push(...metaReasons);
-    }
+    /* ── 1. Metadata GPS check (images + videos — EXIF) ──── */
+    const metaReasons = inspectMetadata(buffer);
+    if (metaReasons.length > 0) reasons.push(...metaReasons);
 
-    /* ── 2. Video-specific processing ────────────────────── */
+    /* ── 2. Video-specific processing (optional — requires ffmpeg) ── */
     let framePaths = [];
     let framesDir = null;
 
@@ -884,7 +882,6 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
         }
       } catch (err) {
         console.warn('[mediaModeration] ffprobe unavailable, skipping duration check:', err.message);
-        // Don't reject — allow the video through without duration verification
       }
 
       // 2b. Mute audio (graceful — use original if ffmpeg unavailable)
@@ -898,7 +895,7 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
         mutedVideoBuffer = buffer;
       }
 
-      // 2c. Extract frames (graceful — skip OCR if ffmpeg unavailable)
+      // 2c. Extract frames for OCR (graceful — skip if ffmpeg unavailable)
       try {
         const { frames, framesDir: fDir } = await extractFrames(videoTmp, 30);
         framePaths = frames;
@@ -907,12 +904,7 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
         console.log(`[mediaModeration] Extracted ${frames.length} frames`);
       } catch (err) {
         console.warn('[mediaModeration] Frame extraction unavailable, skipping video OCR:', err.message);
-        // Don't reject — just skip frame-based OCR analysis
       }
-
-      // Also check video metadata for GPS (from the raw buffer)
-      const metaReasons = inspectMetadata(buffer);
-      if (metaReasons.length > 0) reasons.push(...metaReasons);
     }
 
     /* ── 3. Sign color analysis (images only) ─────────────── */
@@ -926,8 +918,8 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
     }
 
     const colorConfirmed = signColorResult?.hasSignColors ?? false;
-    // Use enhanced OCR (red-channel + soft-gray) when sign colors detected or for video
-    const useEnhancedOcr = isVideo || colorConfirmed;
+    // Use enhanced OCR only when sign colors confirmed by pixel analysis
+    const useEnhancedOcr = colorConfirmed;
 
     // If 2+ distinct sign color types detected AND at least one is green/blue
     // (rectangular street sign) → this is almost certainly a sign photo
