@@ -519,10 +519,26 @@ const SIGN_PATTERNS = [
     category: 'Hours-of-operation sign',
     pattern: /\b\d{1,2}\s*(?::\d{2})?\s*(?:am|pm)\s*[-–—to]+\s*\d{1,2}\s*(?::\d{2})?\s*(?:am|pm)\b/gi,
   },
-  // Street signs / road name patterns (requires full directional word prefix — not abbreviations)
+  // Street signs / road name patterns
+  // Named roads: "Main St", "Oak Avenue", "Sunset Blvd", etc.
   {
     category: 'Street sign',
-    pattern: /\b(?:north|south|east|west)\s+\d{0,5}(?:st|nd|rd|th)?\s*(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|hwy|highway|terr(?:ace)?|pike|trail|crossing|loop)\b/gi,
+    pattern: /\b[A-Z][a-zA-Z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|pike|trail|crossing|loop)\b/gi,
+  },
+  // Numbered streets: "5th Ave", "42nd Street", "1st St", "3rd Rd"
+  {
+    category: 'Street sign',
+    pattern: /\b\d{1,5}(?:st|nd|rd|th)\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|pike|trail|crossing|loop)\b/gi,
+  },
+  // Directional prefix streets: "North Main St", "E 42nd St", "SW 8th Street"
+  {
+    category: 'Street sign',
+    pattern: /\b(?:n(?:orth)?|s(?:outh)?|e(?:ast)?|w(?:est)?|ne|nw|se|sw)\.?\s+(?:\d{1,5}(?:st|nd|rd|th)?\s+)?[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|hwy|highway|terr(?:ace)?|pike|trail|crossing|loop)\b/gi,
+  },
+  // "One Way", "Do Not Enter", "Stop", "Yield", "No Parking", "Speed Limit"
+  {
+    category: 'Street sign',
+    pattern: /\b(?:one\s+way|do\s+not\s+enter|no\s+(?:parking|entry|trespassing|standing|u-?turn)|speed\s+limit\s+\d{1,3}|yield|dead\s+end|road\s+closed|detour|wrong\s+way|keep\s+(?:right|left)|merge|thru\s+traffic|no\s+outlet)\b/gi,
   },
   // Highway signs (very specific)
   {
