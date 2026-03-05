@@ -657,19 +657,7 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     }
   }
 
-  // Check location address (company name / vendor name only — no general contact-info check)
-  if (req.body.location?.address) {
-    for (const vName of vendorNames) {
-      const cnReasons = detectCompanyName(req.body.location.address, vName);
-      if (cnReasons.length > 0) {
-        return next(new AppError(
-          `The address contains prohibited content: ${cnReasons[0]}`,
-          400,
-          { field: 'address', reasons: cnReasons }
-        ));
-      }
-    }
-  }
+  // Address is NOT moderated — it comes from Google Maps autocomplete.
 
   // Check custom amenities (array of strings)
   if (Array.isArray(req.body.customAmenities)) {
@@ -847,19 +835,7 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     }
   }
 
-  // Check location address (company name / vendor name only — no general contact-info check)
-  if (location?.address) {
-    for (const vName of vendorNames2) {
-      const cnReasons = detectCompanyName(location.address, vName);
-      if (cnReasons.length > 0) {
-        return next(new AppError(
-          `The address contains prohibited content: ${cnReasons[0]}`,
-          400,
-          { field: 'address', reasons: cnReasons }
-        ));
-      }
-    }
-  }
+  // Address is NOT moderated — it comes from Google Maps autocomplete.
 
   // Check custom amenities (array of strings)
   if (Array.isArray(req.body.customAmenities)) {
