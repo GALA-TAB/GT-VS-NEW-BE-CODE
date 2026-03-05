@@ -653,18 +653,6 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     }
   }
 
-  // Check location address
-  if (req.body.location?.address) {
-    const { approved, reasons } = moderateText(req.body.location.address, { companyName });
-    if (!approved) {
-      return next(new AppError(
-        `The address contains prohibited content: ${reasons[0]}`,
-        400,
-        { field: 'address', reasons }
-      ));
-    }
-  }
-
   // Check custom amenities (array of strings)
   if (Array.isArray(req.body.customAmenities)) {
     for (const amenity of req.body.customAmenities) {
@@ -833,18 +821,6 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
         `The cancellation policy contains prohibited content: ${reasons[0]}`,
         400,
         { field: 'cancellationPolicy', reasons }
-      ));
-    }
-  }
-
-  // Check location address
-  if (location?.address) {
-    const { approved, reasons } = moderateText(location.address, { companyName: vendorCompanyName });
-    if (!approved) {
-      return next(new AppError(
-        `The address contains prohibited content: ${reasons[0]}`,
-        400,
-        { field: 'address', reasons }
       ));
     }
   }
