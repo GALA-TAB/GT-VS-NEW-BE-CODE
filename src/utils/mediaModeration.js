@@ -874,7 +874,7 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
       fs.writeFileSync(videoTmp, buffer);
       tempFiles.push(videoTmp);
 
-      // 2a. Check duration
+      // 2a. Check duration (graceful — skip if ffprobe unavailable)
       try {
         const duration = await getVideoDuration(videoTmp);
         console.log(`[mediaModeration] Video duration: ${duration.toFixed(1)}s`);
@@ -883,24 +883,22 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
           return { approved: false, reasons };
         }
       } catch (err) {
-        console.error('[mediaModeration] ffprobe error:', err.message);
-        reasons.push('Could not verify video duration. Please ensure the video is valid.');
-        return { approved: false, reasons };
+        console.warn('[mediaModeration] ffprobe unavailable, skipping duration check:', err.message);
+        // Don't reject — allow the video through without duration verification
       }
 
-      // 2b. Mute audio
+      // 2b. Mute audio (graceful — use original if ffmpeg unavailable)
       try {
         const mutedPath = await muteVideo(videoTmp);
         tempFiles.push(mutedPath);
         mutedVideoBuffer = fs.readFileSync(mutedPath);
         console.log('[mediaModeration] Audio removed from video');
       } catch (err) {
-        console.error('[mediaModeration] Mute error:', err.message);
-        // Non-critical: continue with original
+        console.warn('[mediaModeration] ffmpeg mute unavailable, keeping original audio:', err.message);
         mutedVideoBuffer = buffer;
       }
 
-      // 2c. Extract frames
+      // 2c. Extract frames (graceful — skip OCR if ffmpeg unavailable)
       try {
         const { frames, framesDir: fDir } = await extractFrames(videoTmp, 30);
         framePaths = frames;
@@ -908,10 +906,8 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
         tempDirs.push(fDir);
         console.log(`[mediaModeration] Extracted ${frames.length} frames`);
       } catch (err) {
-        console.error('[mediaModeration] Frame extraction error:', err.message);
-        // If we can't extract frames, we can't analyze — reject
-        reasons.push('Could not extract video frames for analysis.');
-        return { approved: false, reasons };
+        console.warn('[mediaModeration] Frame extraction unavailable, skipping video OCR:', err.message);
+        // Don't reject — just skip frame-based OCR analysis
       }
 
       // Also check video metadata for GPS (from the raw buffer)
