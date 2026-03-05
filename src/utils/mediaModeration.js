@@ -4,15 +4,24 @@
  * Validates and analyses uploaded images/videos before allowing publication.
  *
  * Pipeline:
- *   1. Metadata inspection (GPS / geolocation stripping)
- *   2. Video: duration check (≤30s), audio removal, frame extraction
- *   3. OCR on every frame/photo → contact-info + sign detection
- *      (Single fast variant with 8s timeout to avoid slow uploads)
+ *   1. Video: duration check (≤30s), audio removal, frame extraction
+ *   2. OCR on every frame/photo → contact-info + street sign detection
+ *      (Single fast variant with 15s timeout)
+ *
+ * Detects ONLY:
+ *   - Phone numbers, emails, social handles, links/invite codes
+ *   - Usernames, intent phrases (call me, text me, etc.)
+ *   - Payment/money info, crypto, bank details, gift cards
+ *   - Physical addresses, personal identity (DOB/SSN)
+ *   - Obfuscation patterns (spaced-out digits, etc.)
+ *   - Street name signs (St, Ave, Rd, Blvd, Dr, Ln, Ct, Pl, Way, Ter)
+ *
+ * Does NOT reject for: GPS metadata, sign colors, storefronts,
+ * traffic signs, highway signs, STOP signs, or warning signs.
  *
  * Dependencies:
  *   fluent-ffmpeg (ffmpeg + ffprobe wrappers)
  *   tesseract.js  (browser-less OCR)
- *   exif-parser   (EXIF/GPS metadata)
  *   sharp         (image preprocessing for OCR)
  */
 
@@ -80,29 +89,12 @@ function cleanupDir(dir) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * 1. METADATA INSPECTION
+ * 1. METADATA INSPECTION (kept for export compat — no longer rejects)
  * ═══════════════════════════════════════════════════════════ */
-function inspectMetadata(buffer) {
-  const reasons = [];
-  try {
-    const ExifParser = require('exif-parser');
-    const parser = ExifParser.create(buffer);
-    const result = parser.parse();
-    const tags = result.tags || {};
-
-    // Check for GPS coordinates
-    if (
-      (tags.GPSLatitude !== undefined && tags.GPSLatitude !== null) ||
-      (tags.GPSLongitude !== undefined && tags.GPSLongitude !== null) ||
-      tags.GPSPosition ||
-      tags.GPSAltitude !== undefined
-    ) {
-      reasons.push('GPS geolocation metadata detected in file');
-    }
-  } catch {
-    // Not a JPEG/TIFF with EXIF — that is fine
-  }
-  return reasons;
+function inspectMetadata(/* buffer */) {
+  // GPS metadata is no longer a rejection reason.
+  // Photos/videos with location data are allowed.
+  return [];
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -525,21 +517,12 @@ function isLikelyRealText(text) {
 
 /**
  * Quality gate for sign detection.
- * When colorConfirmed=false (regular photo, no sign colors):
- *   Requires 2+ real words, or 1 word with a number, or 1 word of 5+ chars
- * When colorConfirmed=true (sign colors detected by pixel analysis):
- *   Only needs 1 real word of 3+ letters — color already confirms a sign
+ * Requires at least 2 real words (3+ letters) to avoid OCR noise
+ * triggering on random characters that happen to match "St" or "Rd".
  */
-function isLikelySignText(text, { colorConfirmed = false } = {}) {
+function isLikelySignText(text) {
   if (!text || text.trim().length < 3) return false;
   const realWords = text.match(/[a-zA-Z]{3,}/g) || [];
-
-  // When sign colors are confirmed, 1 word is enough
-  if (colorConfirmed) {
-    return realWords.length >= 1;
-  }
-
-  // Without color confirmation, need stronger text evidence
   if (realWords.length >= 2) return true;
   if (realWords.length >= 1 && /\d/.test(text)) return true;
   if (realWords.length >= 1 && realWords.some(w => w.length >= 5)) return true;
@@ -591,190 +574,43 @@ function detectContactInfo(text) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * 3b. SIGN COLOR DETECTION (pixel-based)
+ * 3b. STREET SIGN TEXT DETECTION (OCR-based)
  *
- * Fast pixel analysis to detect rectangular regions of typical
- * street sign colors.  Uses HSL color space for robust matching
- * regardless of brightness/exposure.  Also tracks horizontal
- * pixel runs to distinguish rectangular signs from scattered
- * natural colors (grass, sky, flowers).
+ * Detects street name signs only.  Catches:
+ *   - Named roads: "Main Street", "Oak Avenue", "Sunset Blvd"
+ *   - Abbreviated: "Main St", "Brown Rd", "Cedar Ln"
+ *   - Numbered: "5th Ave", "42nd Street"
+ *   - Directional: "North Main St", "E 42nd St"
  *
- * Sign colors detected:
- *   - Green (FHWA #006B3F) → street name signs
- *   - Blue (#003DA5)       → highway / info signs
- *   - Red (#C1272D)        → stop signs, regulatory
- *   - Yellow (#FFD100)     → warning signs
+ * Only triggers for suffixes: St, Ave, Rd, Blvd, Dr, Ln, Ct, Pl, Way, Ter
+ * (and their full-word equivalents).
  *
- * This enables:
- *   1. Enhanced OCR (red channel variant) when sign colors present
- *   2. Relaxed quality gate (color confirms sign presence)
- *   3. Direct rejection when multiple sign color types found
- * ═══════════════════════════════════════════════════════════ */
-
-function rgbToHsl(r, g, b) {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  let h, s;
-  const l = (max + min) / 2;
-  if (max === min) {
-    h = s = 0;
-  } else {
-    const d = max - min;
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    switch (max) {
-      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
-      case g: h = ((b - r) / d + 2) / 6; break;
-      case b: h = ((r - g) / d + 4) / 6; break;
-    }
-  }
-  return [Math.round(h * 360), Math.round(s * 100), Math.round(l * 100)];
-}
-
-async function detectSignColorRegions(imgBuffer) {
-  const sharp = require('sharp');
-  const { data, info } = await sharp(imgBuffer)
-    .resize(200, 200, { fit: 'inside', withoutEnlargement: true })
-    .removeAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const { width, height } = info;
-  const totalPixels = width * height;
-
-  let signGreen = 0, signBlue = 0, stopRed = 0, warnYellow = 0;
-  let maxGreenRun = 0, maxBlueRun = 0, maxRedRun = 0, maxYellowRun = 0;
-
-  for (let y = 0; y < height; y++) {
-    let gr = 0, blr = 0, rr = 0, yr = 0;
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 3;
-      const [h, s, l] = rgbToHsl(data[idx], data[idx + 1], data[idx + 2]);
-
-      // Street sign green (FHWA #006B3F ≈ H155 S100 L21)
-      const isG = h >= 135 && h <= 180 && s >= 30 && l >= 8 && l <= 45;
-      if (isG) { signGreen++; gr++; } else { if (gr > maxGreenRun) maxGreenRun = gr; gr = 0; }
-
-      // Highway / info blue (#003DA5 ≈ H217 S100 L32)
-      const isB = h >= 190 && h <= 255 && s >= 30 && l >= 8 && l <= 48;
-      if (isB) { signBlue++; blr++; } else { if (blr > maxBlueRun) maxBlueRun = blr; blr = 0; }
-
-      // Stop sign red (#C1272D ≈ H357 S66 L46)
-      const isR = (h <= 18 || h >= 340) && s >= 40 && l >= 18 && l <= 55;
-      if (isR) { stopRed++; rr++; } else { if (rr > maxRedRun) maxRedRun = rr; rr = 0; }
-
-      // Warning yellow (#FFD100 ≈ H49 S100 L50)
-      const isY = h >= 30 && h <= 62 && s >= 45 && l >= 32 && l <= 72;
-      if (isY) { warnYellow++; yr++; } else { if (yr > maxYellowRun) maxYellowRun = yr; yr = 0; }
-    }
-    if (gr > maxGreenRun) maxGreenRun = gr;
-    if (blr > maxBlueRun) maxBlueRun = blr;
-    if (rr > maxRedRun) maxRedRun = rr;
-    if (yr > maxYellowRun) maxYellowRun = yr;
-  }
-
-  const gPct = signGreen / totalPixels;
-  const bPct = signBlue / totalPixels;
-  const rPct = stopRed / totalPixels;
-  const yPct = warnYellow / totalPixels;
-
-  // Run fraction: longest consecutive run as % of image width
-  const gRun = maxGreenRun / width;
-  const bRun = maxBlueRun / width;
-  const rRun = maxRedRun / width;
-  const yRun = maxYellowRun / width;
-
-  // Detect sign-colored regions: pixel count + horizontal run confirms rectangular shape
-  const signTypes = [];
-  if (gPct > 0.012 && gRun > 0.10) signTypes.push('green');
-  if (bPct > 0.012 && bRun > 0.10) signTypes.push('blue');
-  if (rPct > 0.008 && rRun > 0.06) signTypes.push('red');
-  if (yPct > 0.008 && yRun > 0.06) signTypes.push('yellow');
-
-  const hasSignColors = signTypes.length > 0;
-
-  if (hasSignColors) {
-    console.log(`[mediaModeration] Sign colors: ${signTypes.join(', ')} | green=${(gPct * 100).toFixed(1)}%/run${(gRun * 100).toFixed(0)}% blue=${(bPct * 100).toFixed(1)}%/run${(bRun * 100).toFixed(0)}% red=${(rPct * 100).toFixed(1)}%/run${(rRun * 100).toFixed(0)}% yellow=${(yPct * 100).toFixed(1)}%/run${(yRun * 100).toFixed(0)}%`);
-  }
-
-  return { signTypes, hasSignColors };
-}
-
-/* ═══════════════════════════════════════════════════════════
- * 3c. SIGN / STOREFRONT / LOCATION TEXT DETECTION (OCR-based)
- *
- * Detects text that indicates the photo was taken of a storefront,
- * street sign, or other location-identifying signage.  This catches:
- *   - Business name patterns ("XYZ Catering", "ABC Events LLC")
- *   - Street / road signs ("Main St", "5th Avenue")
- *   - "OPEN" / hours-of-operation signs
- *   - Traffic signs ("STOP", "One Way", "No Parking")
- *   - Warning signs ("Cross Traffic", "Does Not Stop")
- *   - Directional / wayfinding signs
- *   - Visible complete addresses on buildings
- *
- * These are separate from contactInfo patterns (which catch phone #s,
- * emails, social handles, payment info, etc.).
+ * Does NOT detect: storefronts, traffic signs, highway signs,
+ * STOP signs, warning signs, or hours-of-operation signs.
  * ═══════════════════════════════════════════════════════════ */
 
 const SIGN_PATTERNS = [
-  // "OPEN" signs — must include context (bare "open" is too common at events)
-  {
-    category: 'Storefront sign',
-    pattern: /\b(?:now\s+open|open\s+(?:24\s*(?:hrs?|hours?)|daily|7\s*days))\b/gi,
-  },
-  // Hours of operation (very specific — low false-positive rate)
-  {
-    category: 'Hours-of-operation sign',
-    pattern: /\b(?:hours|open)\s*:\s*(?:mon|tue|wed|thu|fri|sat|sun|m|t|w|th|f|sa|su)[\s\S]{3,40}(?:am|pm|noon|midnight)\b/gi,
-  },
-  {
-    category: 'Hours-of-operation sign',
-    pattern: /\b\d{1,2}\s*(?::\d{2})?\s*(?:am|pm)\s*[-–—to]+\s*\d{1,2}\s*(?::\d{2})?\s*(?:am|pm)\b/gi,
-  },
-  // Street signs / road name patterns
-  // Named roads: "Main Street", "Oak Avenue", "Sunset Blvd", etc.
-  // Full-word suffixes (street, avenue, road, etc.) — road name 3+ chars is enough
-  // since these long suffixes are very unlikely in OCR garbage
+  // ── Street name signs ONLY ──
+  // Detect road name suffixes: St, Ave, Rd, Blvd, Dr, Ln, Ct, Pl, Way, Ter
+  // Full-word suffixes (street, avenue, road, etc.) — road name 3+ chars
   {
     category: 'Street sign',
-    pattern: /\b[A-Z][a-zA-Z]{2,}\s+(?:street|avenue|boulevard|drive|road|lane|court|place|circle|parkway|terrace|pike|trail|crossing|loop)\b/gi,
+    pattern: /\b[A-Z][a-zA-Z]{2,}\s+(?:street|avenue|boulevard|drive|road|lane|court|place|way|terrace)\b/gi,
   },
-  // Short abbreviated suffixes (st, ave, dr, rd, ln, ct, etc.) require 4+ char road name
-  // to avoid garbage like "An St" or "Er Rd" from OCR noise
-  // 4+ chars catches: Witt Ln, Brown St, Main St, High Dr
+  // Short abbreviated suffixes require 4+ char road name to avoid OCR noise
   {
     category: 'Street sign',
-    pattern: /\b[A-Z][a-zA-Z]{3,}\s+(?:st|ave|blvd|dr|rd|ln|ct|pl|cir|pkwy|terr)\b/gi,
+    pattern: /\b[A-Z][a-zA-Z]{3,}\s+(?:st|ave|blvd|dr|rd|ln|ct|pl|way|ter)\b/gi,
   },
   // Numbered streets: "5th Ave", "42nd Street", "1st St", "3rd Rd"
   {
     category: 'Street sign',
-    pattern: /\b\d{1,5}(?:st|nd|rd|th)\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|pike|trail|crossing|loop)\b/gi,
+    pattern: /\b\d{1,5}(?:st|nd|rd|th)\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|way|ter(?:race)?)\b/gi,
   },
   // Directional prefix streets: "North Main St", "E 42nd St", "SW 8th Street"
   {
     category: 'Street sign',
-    pattern: /\b(?:n(?:orth)?|s(?:outh)?|e(?:ast)?|w(?:est)?|ne|nw|se|sw)\.?\s+(?:\d{1,5}(?:st|nd|rd|th)?\s+)?[A-Za-z]{3,}\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|hwy|highway|terr(?:ace)?|pike|trail|crossing|loop)\b/gi,
-  },
-  // "One Way", "Do Not Enter", "Stop", "Yield", "No Parking", "Speed Limit"
-  {
-    category: 'Street sign',
-    pattern: /\b(?:one\s+way|do\s+not\s+enter|no\s+(?:parking|entry|trespassing|standing|u-?turn)|speed\s+limit\s+\d{1,3}|yield|dead\s+end|road\s+closed|detour|wrong\s+way|keep\s+(?:right|left)|merge|thru\s+traffic|no\s+outlet)\b/gi,
-  },
-  // Highway signs (very specific)
-  {
-    category: 'Highway / road sign',
-    pattern: /\b(?:interstate|i-\d{1,3}|us-\d{1,4}|route\s+\d{1,4}|exit\s+\d{1,4}[a-zA-Z]?)\b/gi,
-  },
-  // STOP sign (uppercase only — OCR of a real STOP sign produces "STOP" in caps)
-  {
-    category: 'Traffic sign',
-    pattern: /\bSTOP\b/g,
-  },
-  // Warning sign text (yellow diamond / rect signs)
-  {
-    category: 'Traffic sign',
-    pattern: /\b(?:cross\s+traffic|does\s+not\s+stop|do\s+not\s+pass|right\s+turn\s+only|left\s+turn\s+only|no\s+right\s+turn|no\s+left\s+turn|pedestrian\s+crossing|school\s+zone|construction\s+zone|road\s+work\s+ahead|bridge\s+(?:out|closed)|weight\s+limit|low\s+clearance|reduce\s+speed|slow\s+down|curve\s+ahead|hill\s+ahead|slippery\s+when\s+wet|watch\s+for\s+(?:children|pedestrians))\b/gi,
+    pattern: /\b(?:n(?:orth)?|s(?:outh)?|e(?:ast)?|w(?:est)?|ne|nw|se|sw)\.?\s+(?:\d{1,5}(?:st|nd|rd|th)?\s+)?[A-Za-z]{3,}\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|way|ter(?:race)?)\b/gi,
   },
 ];
 
@@ -812,7 +648,7 @@ function detectSignsAndStorefronts(text) {
       if (match && match.length > 0) {
         const snippet = match[0].length > 45 ? match[0].slice(0, 42) + '…' : match[0];
         reasons.push(
-          `${category} detected: "${snippet}". Photos of storefronts, street signs, and location-identifying signage are not allowed.`
+          `${category} detected: "${snippet}". Photos containing street name signs are not allowed in listings.`
         );
         seenCategories.add(category);
         break; // next pattern
@@ -858,18 +694,7 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
       }
     }
 
-    /* ── 1. Metadata GPS check (images only — EXIF) ────────
-     *  EXIF is a JPEG/TIFF-only standard.  Video containers
-     *  (MP4, MOV, WebM) use different metadata formats and
-     *  exif-parser will misread random bytes as GPS tags,
-     *  causing false rejections on clean videos.
-     * ─────────────────────────────────────────────────────── */
-    if (isImage) {
-      const metaReasons = inspectMetadata(buffer);
-      if (metaReasons.length > 0) reasons.push(...metaReasons);
-    }
-
-    /* ── 2. Video-specific processing (optional — requires ffmpeg) ── */
+    /* ── 1. Video-specific processing (optional — requires ffmpeg) ── */
     let framePaths = [];
     let framesDir = null;
 
@@ -918,34 +743,7 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
       }
     }
 
-    /* ── 3. Sign color analysis (images only) ─────────────── */
-    let signColorResult = null;
-    if (isImage) {
-      try {
-        signColorResult = await detectSignColorRegions(buffer);
-      } catch (err) {
-        console.error('[mediaModeration] Color analysis error:', err.message);
-      }
-    }
-
-    const colorConfirmed = signColorResult?.hasSignColors ?? false;
-    // Use enhanced OCR only when sign colors confirmed by pixel analysis
-    const useEnhancedOcr = colorConfirmed;
-
-    // If 2+ distinct sign color types detected AND at least one is green/blue
-    // (rectangular street sign) → this is almost certainly a sign photo
-    if (signColorResult && signColorResult.signTypes.length >= 2) {
-      const hasStreetSign = signColorResult.signTypes.includes('green') || signColorResult.signTypes.includes('blue');
-      if (hasStreetSign) {
-        console.log('[mediaModeration] Multiple sign colors with green/blue → direct rejection');
-        reasons.push(
-          'Street/traffic signs detected (multiple sign-colored regions identified). '
-          + 'Photos containing street signs, stop signs, or traffic signs are not allowed in listings.'
-        );
-      }
-    }
-
-    /* ── 4. OCR analysis (photos + video frames) ───────────── */
+    /* ── 2. OCR analysis (photos + video frames) ───────────── */
     const allImages = isVideo ? framePaths : [buffer];
 
     if (isVideo && allImages.length === 0) {
@@ -954,10 +752,11 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
 
     for (let i = 0; i < allImages.length; i++) {
       try {
-        const ocrText = await ocrImage(allImages[i], { allVariants: useEnhancedOcr });
+        // Single fast OCR variant only — no enhanced variants
+        const ocrText = await ocrImage(allImages[i], { allVariants: false });
         if (ocrText.trim().length > 0) {
-          // Sign detection — relaxed gate when sign colors confirmed by pixel analysis
-          if (isLikelySignText(ocrText, { colorConfirmed })) {
+          // Street sign text detection (requires 2+ real words to avoid noise)
+          if (isLikelySignText(ocrText)) {
             const signReasons = detectSignsAndStorefronts(ocrText);
             if (signReasons.length > 0) {
               console.log(`[mediaModeration] Sign text in ${isVideo ? `frame ${i + 1}` : 'image'}:`, signReasons);
@@ -965,7 +764,7 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
             }
           }
 
-          // Contact detection — stricter quality gate (3+ real words)
+          // Contact / payment / identity detection (requires 3+ real words)
           if (isLikelyRealText(ocrText)) {
             const contactReasons = detectContactInfo(ocrText);
             if (contactReasons.length > 0) {
@@ -980,7 +779,7 @@ async function moderateMedia(buffer, mimetype, originalName, listingInfo = {}) {
       if (reasons.length >= 3) break;
     }
 
-    /* ── 5. Final decision ───────────────────────────────── */
+    /* ── 3. Final decision ───────────────────────────────── */
     // De-duplicate reasons
     const uniqueReasons = [...new Set(reasons)];
 
@@ -1042,5 +841,4 @@ module.exports = {
   ocrImage,
   detectContactInfo,
   detectSignsAndStorefronts,
-  detectSignColorRegions,
 };
