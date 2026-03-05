@@ -152,6 +152,18 @@ const updateClientReview = catchAsync(async (req, res, next) => {
         return next(new AppError('Cannot update a deleted client review', 400));
     }
 
+    // Text content moderation (same detection as service description)
+    if (description) {
+        const { approved, reasons } = moderateText(description);
+        if (!approved) {
+            return next(new AppError(
+                `Review contains prohibited content: ${reasons[0]}`,
+                400,
+                { field: 'description', reasons }
+            ));
+        }
+    }
+
     // Update rating if provided
     if (rating !== undefined) {
         clientReview.rating = rating;

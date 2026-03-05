@@ -8,8 +8,7 @@ const { ReviewValidation } = require('../utils/joi/reviewValidation');
 const joiError = require('../utils/joiError');
 const sendNotification = require('../utils/storeNotification');
 const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDeleteFilter');
-const { scanContent } = require('../utils/contentFilter');
-const VenueDetection = require('../models/VenueDetection');
+const { moderateText } = require('../utils/mediaModeration');
 
 const AddReview = catchAsync(async (req, res, next) => {
   const { rating, comment, reviewOn } = req.body;
@@ -49,34 +48,16 @@ const AddReview = catchAsync(async (req, res, next) => {
     return next(new AppError('You have already reviewed this booking', 400));
   }
 
-  // ── Content filtering: check review comment for prohibited content ──
-  try {
-    const settings = await VenueDetection.findOne();
-    const cf = settings?.contentFiltering || {};
-    if (cf.enabled !== false) {
-      const scanOptions = {
-        checkPhoneNumbers:     cf.blockPhoneNumbers !== false,
-        checkEmails:           cf.blockEmails !== false,
-        checkSocialHandles:    cf.blockSocialHandles !== false,
-        checkLinks:            cf.blockLinks !== false,
-        checkIntentPhrases:    cf.blockIntentPhrases !== false,
-        checkPaymentInfo:      cf.blockPaymentInfo !== false,
-        checkLocationIdentity: cf.blockLocationIdentity !== false,
-        checkProfanity:        cf.blockProfanity !== false,
-        checkBannedWords:      cf.blockBannedWords !== false,
-        bannedWords:           cf.bannedWords || [],
-      };
-      const result = scanContent(comment, scanOptions);
-      if (!result.clean) {
-        return next(new AppError(
-          'Sharing personal information is not allowed',
-          400
-        ));
-      }
+  // ── Text content moderation (same detection as service description) ──
+  if (comment) {
+    const { approved, reasons } = moderateText(comment);
+    if (!approved) {
+      return next(new AppError(
+        `Review contains prohibited content: ${reasons[0]}`,
+        400,
+        { field: 'comment', reasons }
+      ));
     }
-  } catch (filterErr) {
-    console.error('Content filter error on review:', filterErr.message);
-    // Non-blocking: allow review if filter fails
   }
 
   const review = await Review.create({
@@ -414,6 +395,19 @@ const EditReview = catchAsync(async (req, res, next) => {
   if (review.reviewer.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
     return next(new AppError('Unauthorized to update this review', 403));
   }
+
+  // ── Text content moderation (same detection as service description) ──
+  if (req.body.comment) {
+    const { approved, reasons } = moderateText(req.body.comment);
+    if (!approved) {
+      return next(new AppError(
+        `Review contains prohibited content: ${reasons[0]}`,
+        400,
+        { field: 'comment', reasons }
+      ));
+    }
+  }
+
   const updatedReview = await Review.findByIdAndUpdate(req.params.id, req.body, {
     new: true,
     runValidators: true
