@@ -741,6 +741,33 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     }
   }
 
+  // Check add-on services (servicePrice) name and description
+  if (Array.isArray(req.body.servicePrice)) {
+    for (let i = 0; i < req.body.servicePrice.length; i++) {
+      const addon = req.body.servicePrice[i];
+      if (addon.name && typeof addon.name === 'string') {
+        const { approved, reasons } = moderateText(addon.name, modOpts);
+        if (!approved) {
+          return next(new AppError(
+            `Add-on service #${i + 1} name contains prohibited content: ${reasons[0]}`,
+            400,
+            { field: `servicePrice[${i}].name`, reasons, detectedWords: vendorNames }
+          ));
+        }
+      }
+      if (addon.description && typeof addon.description === 'string') {
+        const { approved, reasons } = moderateText(addon.description, modOpts);
+        if (!approved) {
+          return next(new AppError(
+            `Add-on service #${i + 1} description contains prohibited content: ${reasons[0]}`,
+            400,
+            { field: `servicePrice[${i}].description`, reasons, detectedWords: vendorNames }
+          ));
+        }
+      }
+    }
+  }
+
   const { error } = serviceupdateSchema.validate(req.body, {
     allowUnknown: true,
     abortEarly: false
@@ -950,6 +977,33 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
             `A custom amenity contains prohibited content: ${reasons[0]}`,
             400,
             { field: 'customAmenities', reasons, detectedWords: vendorNames2 }
+          ));
+        }
+      }
+    }
+  }
+
+  // Check add-on services (servicePrice) name and description
+  if (Array.isArray(req.body.servicePrice)) {
+    for (let i = 0; i < req.body.servicePrice.length; i++) {
+      const addon = req.body.servicePrice[i];
+      if (addon.name && typeof addon.name === 'string') {
+        const { approved, reasons } = moderateText(addon.name, modOpts2);
+        if (!approved) {
+          return next(new AppError(
+            `Add-on service #${i + 1} name contains prohibited content: ${reasons[0]}`,
+            400,
+            { field: `servicePrice[${i}].name`, reasons, detectedWords: vendorNames2 }
+          ));
+        }
+      }
+      if (addon.description && typeof addon.description === 'string') {
+        const { approved, reasons } = moderateText(addon.description, modOpts2);
+        if (!approved) {
+          return next(new AppError(
+            `Add-on service #${i + 1} description contains prohibited content: ${reasons[0]}`,
+            400,
+            { field: `servicePrice[${i}].description`, reasons, detectedWords: vendorNames2 }
           ));
         }
       }
