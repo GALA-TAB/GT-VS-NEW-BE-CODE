@@ -691,7 +691,39 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     }
   }
 
-  // Address is NOT moderated — it comes from Google Maps autocomplete.
+  // ── Service Address moderation ──
+  // serviceAddress is the exact venue/service address (separate from vendor profile address).
+  // It still needs content moderation checks to prevent rule bypassing.
+  if (req.body.serviceAddress) {
+    const addressFields = ['street', 'city', 'state', 'country', 'formattedAddress'];
+    for (const field of addressFields) {
+      if (req.body.serviceAddress[field]) {
+        const { approved, reasons } = moderateText(req.body.serviceAddress[field], modOpts);
+        if (!approved) {
+          return next(new AppError(
+            `The service address ${field} contains prohibited content: ${reasons[0]}`,
+            400,
+            { field: `serviceAddress.${field}`, reasons, detectedWords: vendorNames }
+          ));
+        }
+      }
+    }
+  }
+
+  // Auto-populate serviceAddress from location if serviceAddress is not explicitly provided
+  if (!req.body.serviceAddress && req.body.location) {
+    const loc = req.body.location;
+    if (loc.address) {
+      req.body.serviceAddress = {
+        street: loc.address,
+        city: loc.city || '',
+        state: loc.state || '',
+        postalCode: loc.postalCode || '',
+        country: loc.country || '',
+        formattedAddress: [loc.address, loc.city, loc.state, loc.country, loc.postalCode].filter(Boolean).join(', ')
+      };
+    }
+  }
 
   // Check custom amenities (array of strings)
   if (Array.isArray(req.body.customAmenities)) {
@@ -832,7 +864,8 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     status,
     keyword,
     TimePerHour,
-    photography
+    photography,
+    serviceAddress
   } = req.body;
 
   // ── Text content moderation ──
@@ -875,7 +908,37 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     }
   }
 
-  // Address is NOT moderated — it comes from Google Maps autocomplete.
+  // ── Service Address moderation ──
+  if (req.body.serviceAddress) {
+    const addressFields = ['street', 'city', 'state', 'country', 'formattedAddress'];
+    for (const field of addressFields) {
+      if (req.body.serviceAddress[field]) {
+        const { approved, reasons } = moderateText(req.body.serviceAddress[field], modOpts2);
+        if (!approved) {
+          return next(new AppError(
+            `The service address ${field} contains prohibited content: ${reasons[0]}`,
+            400,
+            { field: `serviceAddress.${field}`, reasons, detectedWords: vendorNames2 }
+          ));
+        }
+      }
+    }
+  }
+
+  // Auto-populate serviceAddress from location if not explicitly provided
+  if (!req.body.serviceAddress && req.body.location) {
+    const loc = req.body.location;
+    if (loc.address) {
+      req.body.serviceAddress = {
+        street: loc.address,
+        city: loc.city || '',
+        state: loc.state || '',
+        postalCode: loc.postalCode || '',
+        country: loc.country || '',
+        formattedAddress: [loc.address, loc.city, loc.state, loc.country, loc.postalCode].filter(Boolean).join(', ')
+      };
+    }
+  }
 
   // Check custom amenities (array of strings)
   if (Array.isArray(req.body.customAmenities)) {
@@ -917,7 +980,8 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     status,
     TimePerHour,
     keyword,
-    photography
+    photography,
+    serviceAddress
   };
 
   Object.keys(fieldsToValidate).forEach((key) => {
@@ -1401,7 +1465,15 @@ const getServiceListingsforLandingPage = catchAsync(async (req, res) => {
     maxPrice: Number(req.query.maxPrice) || maxPrice,
     totalPages: Math.ceil(totalCount / limit),
     currentPage: parseInt(page, 10),
-    data: serviceListings
+    data: serviceListings.map(listing => {
+      // Strip private service address from public listing results.
+      // serviceAddress is only revealed after booking confirmation.
+      const { serviceAddress, ...rest } = listing;
+      if (rest.location) {
+        delete rest.location.address;
+      }
+      return rest;
+    })
   });
 });
 const getAllService = catchAsync(async (req, res) => {
@@ -1636,7 +1708,13 @@ const getoverallServiceListings = catchAsync(async (req, res) => {
 
   return res.status(200).json({
     status: 'success',
-    data: serviceListings,
+    data: serviceListings.map(listing => {
+      const { serviceAddress, ...rest } = listing;
+      if (rest.location) {
+        delete rest.location.address;
+      }
+      return rest;
+    }),
     totalCount: overallTotal,
     minPrice: Number(req.query.minPrice) || overallMin,
     maxPrice: Number(req.query.maxPrice) || overallMax
@@ -1776,9 +1854,25 @@ const getServiceListing = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID', 404));
   }
 
+  const result = serviceListing[0];
+
+  // Strip private serviceAddress from public responses.
+  // Only the listing's vendor or an admin can see the full service address.
+  const isOwnerOrAdmin = req.user && (
+    req.user.role === 'admin' ||
+    result.vendorId?.toString() === req.user._id?.toString()
+  );
+
+  if (!isOwnerOrAdmin) {
+    delete result.serviceAddress;
+    if (result.location) {
+      delete result.location.address;
+    }
+  }
+
   return res.status(200).json({
     status: 'success',
-    data: serviceListing[0],
+    data: result,
     message: 'Service listing found successfully'
   });
 });
@@ -1823,10 +1917,19 @@ const getServiceListingLanding = catchAsync(async (req, res, next) => {
   if (!serviceListing) {
     return next(new AppError('No service listing found with this ID', 404));
   }
+
+  // Strip private service address from public listing response.
+  // serviceAddress is only revealed after booking confirmation — separate from vendor profile address.
+  const listingObj = serviceListing.toObject();
+  delete listingObj.serviceAddress;
+  if (listingObj.location) {
+    delete listingObj.location.address;
+  }
+
   return res.status(200).json({
     status: 'success',
     data: {
-      ...serviceListing.toObject(),
+      ...listingObj,
       vendorId: {
         ...serviceListing.vendorId.toObject(),
         BookingResponseTimeMinutes: responseTime[0]?.avgResponseTimeMinutes || 'N/A',

@@ -17,7 +17,8 @@ const {
     getBookingExtensionHistory,
     extensionsRequestForCustomer,
     getBookingsWithMessagesByUser,
-    checkServiceAvailability
+    checkServiceAvailability,
+    getBookingServiceAddress
 } = require('../controllers/requestController');
 
 const requireAuth = require('../middlewares/requireAuth');
@@ -68,5 +69,9 @@ router.route('/:id')
 router.route('/:id/refunddata').get(requireAuth, restrictTo(["admin","vendor"]),subAuth, getRefundDataOfBooking).post(requireAuth, restrictTo(["admin","vendor"]),subAuth, refundAmount);
 router.route('/:bookingId/extend').post(requireAuth, restrictTo(["customer","admin","vendor"]), logActionMiddleware("Extend Booking","Booking"), extendBooking).get(requireAuth, restrictTo(["customer","admin","vendor"]), subAuth,getBookingExtensionHistory);
 router.route('/:extensionId/acceptorrejectextension').post(requireAuth, restrictTo(["vendor","admin","customer"]), logActionMiddleware("Accept or Reject Extension","Booking"), subAuth,acceptorRejectExtension);
+
+// Service address reveal — only confirmed booking customer can access
+router.route('/:bookingId/service-address')
+    .get(requireAuth, restrictTo(["customer","admin"]), getBookingServiceAddress);
 
 module.exports = router;

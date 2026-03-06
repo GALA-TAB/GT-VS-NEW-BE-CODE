@@ -72,7 +72,6 @@ const ServiceListingSchema = new mongoose.Schema(
       },
       address: {
         type: String,
-
         trim: true
       },
       city: {
@@ -104,6 +103,34 @@ const ServiceListingSchema = new mongoose.Schema(
       radius: {
         type: Number,
         default: 10 // Default radius in kilometers
+      }
+    },
+    // Service Address — the exact venue/service address, kept private until booking is confirmed.
+    // This is separate from the vendor's personal/mailing address on their profile.
+    serviceAddress: {
+      street: {
+        type: String,
+        trim: true
+      },
+      city: {
+        type: String,
+        trim: true
+      },
+      state: {
+        type: String,
+        trim: true
+      },
+      postalCode: {
+        type: String,
+        trim: true
+      },
+      country: {
+        type: String,
+        trim: true
+      },
+      formattedAddress: {
+        type: String,
+        trim: true
       }
     },
     eventAllowed: {

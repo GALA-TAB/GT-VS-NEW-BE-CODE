@@ -28,6 +28,7 @@ const Calendar = require('../models/Calendar');
 const sendNotification = require('../utils/storeNotification');
 const { bookingformat } = require('../utils/dataformat');
 const mongoose = require('mongoose');
+const Email = require('../utils/email');
 const Pricing = require('../models/Pricing');
 const { maintoConnect } = require('../utils/stripe-utils/stripe-transfer.util');
 const Payment = require('../models/Payment');
@@ -309,6 +310,67 @@ const createBooking = catchAsync(async (req, res, next) => {
       permission: 'bookings',
       linkUrl: `/vendor-dashboard/comfirm-Bookings`
     });
+
+    // Send service address reveal notification to customer for instant bookings
+    if (instantBookingCheck) {
+      let instantAddressText = '';
+      if (listingExists?.serviceAddress) {
+        const parts = [
+          listingExists.serviceAddress.street,
+          listingExists.serviceAddress.city,
+          listingExists.serviceAddress.state,
+          listingExists.serviceAddress.postalCode,
+          listingExists.serviceAddress.country
+        ].filter(Boolean);
+        instantAddressText = parts.join(', ');
+      } else if (listingExists?.location?.address) {
+        const parts = [
+          listingExists.location.address,
+          listingExists.location.city,
+          listingExists.location.state,
+          listingExists.location.postalCode,
+          listingExists.location.country
+        ].filter(Boolean);
+        instantAddressText = parts.join(', ');
+      }
+
+      let instantLocationLink = '';
+      if (listingExists?.location?.latitude && listingExists?.location?.longitude) {
+        instantLocationLink = `https://www.google.com/maps?q=${listingExists.location.latitude},${listingExists.location.longitude}`;
+      }
+
+      sendNotification({
+        userId: userId,
+        title: 'Booking Confirmed',
+        message: `Your booking has been confirmed. Below is the venue address for your event.\n\nService Address: ${instantAddressText || 'Contact vendor for address'}${instantLocationLink ? `\n\nView on Map: ${instantLocationLink}` : ''}`,
+        type: 'booking',
+        fortype: 'booking',
+        permission: 'bookings',
+        linkUrl: `/user-dashboard/user-booking?tab=0`
+      });
+
+      // Send booking confirmation email with service address to customer (instant booking)
+      try {
+        if (user?.email) {
+          await new Email(user.email, user.firstName).send(
+            'bookingConfirmed',
+            'Your Booking is Confirmed - Venue Address Inside',
+            {
+              customerName: user.firstName || 'Guest',
+              serviceTitle: listingExists.title,
+              checkIn: new Date(checkIn).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }),
+              checkOut: new Date(checkOut).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }),
+              guests: guests,
+              totalPrice: booking.totalPrice,
+              serviceAddress: instantAddressText || null,
+              mapLink: instantLocationLink || null
+            }
+          );
+        }
+      } catch (emailErr) {
+        console.error('Failed to send instant booking confirmation email:', emailErr.message);
+      }
+    }
   } else {
     sendNotification({
       userId: listingExists?.vendorId?._id,
@@ -373,6 +435,7 @@ const updateBookingRequestStatus = catchAsync(async (req, res, next) => {
 
     // Construct Google Maps link for service location
     let locationLink = '';
+    let serviceAddressText = '';
     if (listing?.location) {
       if (listing.location.latitude && listing.location.longitude) {
         // Use coordinates for precise location
@@ -392,15 +455,58 @@ const updateBookingRequestStatus = catchAsync(async (req, res, next) => {
       }
     }
 
+    // Build readable service address for the customer
+    if (listing?.serviceAddress) {
+      const parts = [
+        listing.serviceAddress.street,
+        listing.serviceAddress.city,
+        listing.serviceAddress.state,
+        listing.serviceAddress.postalCode,
+        listing.serviceAddress.country
+      ].filter(Boolean);
+      serviceAddressText = parts.join(', ');
+    } else if (listing?.location?.address) {
+      const parts = [
+        listing.location.address,
+        listing.location.city,
+        listing.location.state,
+        listing.location.postalCode,
+        listing.location.country
+      ].filter(Boolean);
+      serviceAddressText = parts.join(', ');
+    }
+
     sendNotification({
       userId: booking?.user,
       title: 'Booking Confirmed',
-      message: `You have confirmed the booking request from ${req.user?.firstName} ${req.user?.lastName}${locationLink ? `\n\nLocation: ${locationLink}` : ''}`,
+      message: `Your booking has been confirmed. Below is the venue address for your event.\n\nService Address: ${serviceAddressText || 'Contact vendor for address'}${locationLink ? `\n\nView on Map: ${locationLink}` : ''}`,
       type: 'booking',
       fortype: 'booking',
       permission: 'bookings',
       linkUrl: `/user-dashboard/user-booking?tab=0`
     });
+
+    // Send booking confirmation email with service address to customer
+    try {
+      if (findcustomer?.email) {
+        await new Email(findcustomer.email, findcustomer.firstName).send(
+          'bookingConfirmed',
+          'Your Booking is Confirmed - Venue Address Inside',
+          {
+            customerName: findcustomer.firstName || 'Guest',
+            serviceTitle: listing.title,
+            checkIn: new Date(booking.checkIn).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }),
+            checkOut: new Date(booking.checkOut).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }),
+            guests: booking.guests,
+            totalPrice: booking.totalPrice,
+            serviceAddress: serviceAddressText || null,
+            mapLink: locationLink || null
+          }
+        );
+      }
+    } catch (emailErr) {
+      console.error('Failed to send booking confirmation email:', emailErr.message);
+    }
 
     booking.status = 'booked';
   } else if (status === 'rejected') {
@@ -1832,6 +1938,86 @@ const checkServiceAvailability = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * Get service address for a confirmed booking.
+ * Only the customer who owns the booking can access the address,
+ * and only when the booking status is 'booked' or 'completed'.
+ * This is the service/venue address, NOT the vendor's personal address.
+ */
+const getBookingServiceAddress = catchAsync(async (req, res, next) => {
+  const { bookingId } = req.params;
+
+  const booking = await Booking.findById(bookingId);
+  if (!booking) {
+    return next(new AppError('Booking not found', 404));
+  }
+
+  // Security: only the booking customer or admin can access
+  if (
+    req.user.role !== 'admin' &&
+    booking.user.toString() !== req.user._id.toString()
+  ) {
+    return next(new AppError('Unauthorized to access this booking address', 403));
+  }
+
+  // Only reveal address for confirmed or completed bookings
+  if (!['booked', 'completed'].includes(booking.status)) {
+    return next(new AppError('Service address is only available for confirmed bookings', 403));
+  }
+
+  const listing = await Listing.findById(booking.service).select('serviceAddress location title');
+  if (!listing) {
+    return next(new AppError('Service listing not found', 404));
+  }
+
+  // Build address response from serviceAddress (preferred) or fallback to location
+  let address = null;
+  if (listing.serviceAddress && listing.serviceAddress.street) {
+    address = {
+      street: listing.serviceAddress.street,
+      city: listing.serviceAddress.city,
+      state: listing.serviceAddress.state,
+      postalCode: listing.serviceAddress.postalCode,
+      country: listing.serviceAddress.country,
+      formattedAddress: listing.serviceAddress.formattedAddress
+    };
+  } else if (listing.location && listing.location.address) {
+    address = {
+      street: listing.location.address,
+      city: listing.location.city,
+      state: listing.location.state,
+      postalCode: listing.location.postalCode,
+      country: listing.location.country,
+      formattedAddress: [
+        listing.location.address,
+        listing.location.city,
+        listing.location.state,
+        listing.location.country,
+        listing.location.postalCode
+      ].filter(Boolean).join(', ')
+    };
+  }
+
+  let mapLink = '';
+  if (listing.location?.latitude && listing.location?.longitude) {
+    mapLink = `https://www.google.com/maps?q=${listing.location.latitude},${listing.location.longitude}`;
+  } else if (address?.formattedAddress) {
+    mapLink = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address.formattedAddress)}`;
+  }
+
+  return res.status(200).json({
+    status: 'success',
+    data: {
+      bookingId: booking._id,
+      serviceTitle: listing.title,
+      serviceAddress: address,
+      mapLink,
+      latitude: listing.location?.latitude,
+      longitude: listing.location?.longitude
+    }
+  });
+});
+
 module.exports = {
   createBooking,
   updateBookingRequestStatus,
@@ -1852,5 +2038,6 @@ module.exports = {
   extensionsRequestForVendor,
   extensionsRequestForCustomer,
   getBookingExtensionHistory,
-  checkServiceAvailability
+  checkServiceAvailability,
+  getBookingServiceAddress
 };

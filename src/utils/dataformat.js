@@ -555,6 +555,15 @@ const bookingformat = [
       'service.vendorId': 1,
       'service.serviceTypeId': 1,
       'service.location': 1,
+      // Include serviceAddress only for confirmed/completed bookings (privacy protection).
+      // This is the service/venue address, NOT the vendor's personal address.
+      'service.serviceAddress': {
+        $cond: {
+          if: { $in: ['$status', ['booked', 'completed']] },
+          then: '$service.serviceAddress',
+          else: '$$REMOVE'
+        }
+      },
       'vendor.profilePicture': 1,
       'vendor.email': 1,
       'vendor.firstName': 1,

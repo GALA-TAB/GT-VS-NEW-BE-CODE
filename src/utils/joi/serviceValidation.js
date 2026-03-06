@@ -1,5 +1,31 @@
 const Joi = require('joi');
 
+const serviceAddressSchema = Joi.object({
+    street: Joi.string().trim().messages({
+        'string.base': 'Street address must be a string.',
+        'any.required': 'Street address is required.'
+    }),
+    city: Joi.string().trim().messages({
+        'string.base': 'City must be a string.',
+        'any.required': 'City is required.'
+    }),
+    state: Joi.string().trim().messages({
+        'string.base': 'State must be a string.',
+        'any.required': 'State is required.'
+    }),
+    postalCode: Joi.string().trim().messages({
+        'string.base': 'ZIP code must be a string.',
+        'any.required': 'ZIP code is required.'
+    }),
+    country: Joi.string().trim().messages({
+        'string.base': 'Country must be a string.',
+        'any.required': 'Country is required.'
+    }),
+    formattedAddress: Joi.string().trim().optional().messages({
+        'string.base': 'Formatted address must be a string.'
+    })
+});
+
 const locationSchema = Joi.object({
     address: Joi.string().trim().messages({
         'any.required': 'Address is required.',
@@ -187,7 +213,8 @@ const serviceupdateSchema = Joi.object({
     bufferTimeUnit: Joi.string().valid("minutes", "hours").default("minutes").messages({
         "string.valid": "Buffer time unit must be one of the following: minutes, hours.",
         "any.required": "Buffer time unit is required."
-    })
+    }),
+    serviceAddress: serviceAddressSchema
 
 });
 
