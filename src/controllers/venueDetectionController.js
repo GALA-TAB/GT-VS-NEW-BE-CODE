@@ -353,6 +353,31 @@ exports.checkContent = catchAsync(async (req, res, next) => {
     bannedWords:           cf.bannedWords || [],
   };
 
+  // Also check listing address to prevent vendors
+  // from embedding their service address in text fields.
+  let addressPartsToBlock = [];
+  if (serviceListingId) {
+    try {
+      const listing = await ServiceListing.findById(serviceListingId)
+        .select('location serviceAddress').lean();
+      if (listing?.location) {
+        ['address', 'city', 'state', 'neighborhood', 'postalCode'].forEach(f => {
+          if (listing.location[f] && listing.location[f].trim().length > 2)
+            addressPartsToBlock.push(listing.location[f].trim().toLowerCase());
+        });
+      }
+      if (listing?.serviceAddress) {
+        ['street', 'city', 'state', 'postalCode', 'formattedAddress'].forEach(f => {
+          if (listing.serviceAddress[f] && listing.serviceAddress[f].trim().length > 2)
+            addressPartsToBlock.push(listing.serviceAddress[f].trim().toLowerCase());
+        });
+      }
+      addressPartsToBlock = [...new Set(addressPartsToBlock)];
+    } catch (e) {
+      console.log('[checkContent] listing address lookup failed:', e.message);
+    }
+  }
+
   const results = texts.map((t) => {
     // Run the general content scan only when the master toggle is on
     const scanResult = filterEnabled
@@ -376,6 +401,25 @@ exports.checkContent = catchAsync(async (req, res, next) => {
         break; // one match is enough
       }
     }
+
+    // Check if user embedded their listing address
+    if (addressPartsToBlock.length > 0) {
+      const lowerText = String(t).toLowerCase();
+      for (const addrPart of addressPartsToBlock) {
+        if (lowerText.includes(addrPart)) {
+          scanResult.clean = false;
+          scanResult.violations = scanResult.violations || [];
+          scanResult.violations.push({ category: 'listingAddress', message: `Listing address detected: ${addrPart}` });
+          scanResult.allMatches = scanResult.allMatches || [];
+          scanResult.allMatches.push(addrPart);
+          scanResult.summary = scanResult.summary
+            ? scanResult.summary + '; Listing address detected'
+            : 'Listing address detected';
+          break;
+        }
+      }
+    }
+
     return scanResult;
   });
   const allClean = results.every((r) => r.clean);
