@@ -214,7 +214,14 @@ const serviceupdateSchema = Joi.object({
         "string.valid": "Buffer time unit must be one of the following: minutes, hours.",
         "any.required": "Buffer time unit is required."
     }),
-    serviceAddress: serviceAddressSchema
+    serviceAddress: serviceAddressSchema,
+    customAmenities: Joi.array().items(
+        Joi.string().trim().max(100).messages({
+            "string.max": "Each custom amenity must be at most 100 characters."
+        })
+    ).messages({
+        "array.base": "Custom amenities must be an array."
+    })
 
 });
 
