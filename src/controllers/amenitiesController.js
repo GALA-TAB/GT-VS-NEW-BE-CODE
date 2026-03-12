@@ -3,9 +3,14 @@ const { Category, Amenities } = require('../models/Amenities');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
-// Get All Amenities with Populated Categories
+// Get All Amenities with Populated Categories (optionally filtered by service type)
 const getAllAmenities = catchAsync(async (req, res) => {
-  const amenities = await Amenities.find().populate('categories'); // Populate categories
+  const { serviceType } = req.query;
+  const filter = {};
+  if (serviceType) {
+    filter.serviceTypes = serviceType;
+  }
+  const amenities = await Amenities.find(filter).populate('categories');
 
   return res.status(200).json({
     status: 'success',
