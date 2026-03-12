@@ -927,31 +927,34 @@ function detectCompanyName(text, companyName) {
   // ── Phase A: Full-phrase matching (per variant) ──
   for (const variant of variants) {
     const normCN = normForFuzzy(variant);
-    if (normCN.length < 2) continue;
+    if (normCN.length < 3) continue; // skip very short names to avoid false positives
 
     // 1. Direct normalised substring
     if (normText.includes(normCN)) {
       return ['Text contains the vendor company name'];
     }
 
-    // 2. Sliding-window Levenshtein
-    const maxDist = normCN.length <= 5 ? 1 : 2;
-    const winLen  = normCN.length;
-    for (let i = 0; i <= normText.length - winLen; i++) {
-      const window = normText.substring(i, i + winLen);
-      if (levenshtein(window, normCN) <= maxDist) {
-        return ['Text contains a close variation of the vendor company name'];
-      }
-    }
-
-    // 3. Windows ±1 and ±2 chars (catches insertions / deletions)
-    for (const delta of [-2, -1, 1, 2]) {
-      const wl = winLen + delta;
-      if (wl < 2) continue;
-      for (let i = 0; i <= normText.length - wl; i++) {
-        const window = normText.substring(i, i + wl);
+    // 2. Sliding-window Levenshtein — only for longer names (8+ chars)
+    //    Short names produce too many false positives with fuzzy matching
+    if (normCN.length >= 8) {
+      const maxDist = 2;
+      const winLen  = normCN.length;
+      for (let i = 0; i <= normText.length - winLen; i++) {
+        const window = normText.substring(i, i + winLen);
         if (levenshtein(window, normCN) <= maxDist) {
           return ['Text contains a close variation of the vendor company name'];
+        }
+      }
+
+      // 3. Windows ±1 chars (catches single insertions / deletions)
+      for (const delta of [-1, 1]) {
+        const wl = winLen + delta;
+        if (wl < 3) continue;
+        for (let i = 0; i <= normText.length - wl; i++) {
+          const window = normText.substring(i, i + wl);
+          if (levenshtein(window, normCN) <= maxDist) {
+            return ['Text contains a close variation of the vendor company name'];
+          }
         }
       }
     }
@@ -965,9 +968,11 @@ function detectCompanyName(text, companyName) {
   const words = bestVariant
     .split(/\s+/)
     .map(w => normForFuzzy(w))
-    .filter(w => w.length >= 3);                       // skip tiny words like "dj", "of"
+    .filter(w => w.length >= 4);  // skip short words that match too broadly
 
-  if (words.length >= 2) {
+  // Require 2+ significant words AND all must appear, AND at least one must be 5+ chars
+  // This avoids false positives on generic short words like "party time"
+  if (words.length >= 2 && words.some(w => w.length >= 5)) {
     const allFound = words.every(w => wordAppearsInText(w, normText));
     if (allFound) {
       return ['Text contains individual words of the vendor company name'];

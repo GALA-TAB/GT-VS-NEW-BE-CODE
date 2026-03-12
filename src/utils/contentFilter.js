@@ -15,7 +15,7 @@
  * Converts "five five five one two three four" → "5551234"
  * ═══════════════════════════════════════════════════════════ */
 const WORD_TO_DIGIT = {
-  zero: '0', oh: '0', o: '0',
+  zero: '0', oh: '0',
   one: '1', two: '2', three: '3', four: '4', five: '5',
   six: '6', seven: '7', eight: '8', nine: '9',
 };
@@ -49,15 +49,16 @@ function deobfuscate(text) {
 // ─── 1. Phone Numbers ──────────────────────────────────────
 function detectPhoneNumbers(raw, clean) {
   const patterns = [
-    // Standard US: (xxx) xxx-xxxx, xxx-xxx-xxxx, xxx.xxx.xxxx, xxx xxx xxxx
-    /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g,
-    // International with country code +xx
+    // Standard US with separators: (xxx) xxx-xxxx, xxx-xxx-xxxx, xxx.xxx.xxxx
+    // Require at least one separator (dash/dot/space/paren) to avoid matching plain numbers like prices
+    /(?:\+?1[-.\s])?\(?\d{3}\)[-.\s]?\d{3}[-.\s]\d{4}\b/g,
+    /(?:\+?1[-.\s])?\d{3}[-.\s]\d{3}[-.\s]\d{4}\b/g,
+    // International with country code +xx (requires + prefix)
     /\+\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{2,4}[-.\s]?\d{2,4}[-.\s]?\d{0,4}/g,
     // 10+ consecutive digits (after deobfuscation)
     /\d{10,}/g,
     // 1-800 / 1-888 style
     /1[-.\s]?8[0-9]{2}[-.\s]?\d{3}[-.\s]?\d{4}/gi,
-    // "one eight hundred" style already normalised by deobfuscate
   ];
   const matches = new Set();
   for (const p of patterns) {
@@ -115,8 +116,9 @@ function detectLinks(raw, _clean) {
     /www\.[^\s<>"']+/gi,
     // Platform short links
     /(?:discord\.gg|t\.me|wa\.me|linktr\.ee|bit\.ly|tinyurl\.com|goo\.gl|cutt\.ly|rb\.gy|is\.gd|v\.gd|shorturl\.at|tiny\.cc)\/[\w\-+]+/gi,
-    // Domain patterns without protocol
-    /[a-zA-Z0-9\-]+\.(?:com|net|org|io|co|me|app|dev|xyz|gg|info|biz|us|uk|ca|de|fr|link|site|online|store|shop|tech|page)(?:\/[^\s]*)?/gi,
+    // Domain patterns without protocol — require at least 2 chars before dot
+    // and word boundary to avoid matching normal text like "setup.co" etc.
+    /\b[a-zA-Z0-9][a-zA-Z0-9\-]{1,62}\.(?:com|net|org|io|app|dev|xyz|gg|info|biz|link|site|online|store|shop|tech)(?:\/[^\s]*)?\b/gi,
   ];
   for (const p of patterns) {
     const found = raw.match(p);

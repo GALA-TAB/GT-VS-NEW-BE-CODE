@@ -385,6 +385,12 @@ exports.checkContent = catchAsync(async (req, res, next) => {
       ? scanContent(String(t), scanOptions)
       : { clean: true, violations: [], allMatches: [], summary: '' };
 
+    // Log what was detected for debugging
+    if (!scanResult.clean) {
+      console.log('[checkContent] scanContent flagged text:', JSON.stringify(String(t).substring(0, 100)),
+        'violations:', JSON.stringify(scanResult.violations.map(v => ({ cat: v.category, matches: v.matches }))));
+    }
+
     // Always check for vendor company name / full name (independent of master toggle)
     for (const vName of uniqueNames) {
       const cnReasons = detectCompanyName(String(t), vName);
