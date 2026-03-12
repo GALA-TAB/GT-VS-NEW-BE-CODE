@@ -60,6 +60,12 @@ const ServiceListingSchema = new mongoose.Schema(
         ref: 'Category'
       }
     ],
+    customAmenities: [
+      {
+        type: String,
+        trim: true
+      }
+    ],
     location: {
       type: {
         type: String,
