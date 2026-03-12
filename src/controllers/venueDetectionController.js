@@ -360,15 +360,16 @@ exports.checkContent = catchAsync(async (req, res, next) => {
     try {
       const listing = await ServiceListing.findById(serviceListingId)
         .select('location serviceAddress').lean();
+      // Only block street-level address details, NOT city/state (vendors naturally mention those)
       if (listing?.location) {
-        ['address', 'city', 'state', 'neighborhood', 'postalCode'].forEach(f => {
-          if (listing.location[f] && listing.location[f].trim().length > 2)
+        ['address'].forEach(f => {
+          if (listing.location[f] && listing.location[f].trim().length > 5)
             addressPartsToBlock.push(listing.location[f].trim().toLowerCase());
         });
       }
       if (listing?.serviceAddress) {
-        ['street', 'city', 'state', 'postalCode', 'formattedAddress'].forEach(f => {
-          if (listing.serviceAddress[f] && listing.serviceAddress[f].trim().length > 2)
+        ['street', 'formattedAddress'].forEach(f => {
+          if (listing.serviceAddress[f] && listing.serviceAddress[f].trim().length > 5)
             addressPartsToBlock.push(listing.serviceAddress[f].trim().toLowerCase());
         });
       }

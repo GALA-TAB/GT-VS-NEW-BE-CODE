@@ -33,9 +33,9 @@ function deobfuscate(text) {
   let t = text;
   // Normalise number words first ("five five five" → "555")
   t = normaliseNumberWords(t);
-  // Collapse deliberate spacing in digit/letter sequences ("5 5 5" → "555")
-  // Only collapse single-char tokens separated by spaces
-  t = t.replace(/\b(\w)\s+(?=\w\b)/g, '$1');
+  // Collapse deliberate spacing in DIGIT sequences only ("5 5 5" → "555")
+  // Only collapse single digits separated by spaces (not letters, to avoid false positives)
+  t = t.replace(/\b(\d)\s+(?=\d\b)/g, '$1');
   return t;
 }
 
@@ -146,10 +146,8 @@ function detectIntentPhrases(raw, _clean) {
 function detectPaymentInfo(raw, clean) {
   const matches = new Set();
   const patterns = [
-    // CashApp $cashtag
-    /\$[a-zA-Z][\w]{1,20}/g,
-    // Obfuscated "$cashtag" → "$ n a m e"
-    /\$\s+[a-zA-Z\s]{3,30}/g,
+    // CashApp $cashtag — require $+letter NOT preceded by digit (to skip $50, $100 etc.)
+    /(?<!\d)\$[a-zA-Z][a-zA-Z_\d]{2,20}(?!\s*\d)/g,
     // Platform mentions + handle
     /(?:cash\s*app|venmo|zelle|paypal|apple\s*pay|google\s*pay|gpay)[\s:@$]*[\w@$.]{0,30}/gi,
     // "send money", "pay me"
@@ -162,8 +160,6 @@ function detectPaymentInfo(raw, clean) {
     /\b(?:btc|eth|usdt|usdc|bitcoin|ethereum|crypto|wallet\s*address)\b/gi,
     // Bank details
     /\b(?:routing\s*(?:number|#|no)?|account\s*(?:number|#|no)?|iban|swift|bic)[\s:]*[\w\d]{6,34}\b/gi,
-    // Gift card patterns
-    /\b(?:gift\s*card|prepaid\s*card|itunes\s*card|amazon\s*card|google\s*play\s*card)\b/gi,
   ];
   for (const p of patterns) {
     for (const src of [raw, clean]) {
@@ -180,15 +176,11 @@ function detectLocationIdentity(raw, _clean) {
   const patterns = [
     // Street address: "123 Main St", "456 Oak Ave Apt 2"
     /\b\d{1,5}\s+[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|way|cir(?:cle)?|pkwy|parkway|ter(?:race)?)\b/gi,
-    // Apt/Unit/Suite
-    /\b(?:apt|apartment|unit|suite|ste|floor|fl|bldg|building)\s*[#.]?\s*\w{1,10}\b/gi,
-    // ZIP code (5 or 9 digit)
-    /\b\d{5}(?:-\d{4})?\b/g,
     // "Send me your address" / "meet me at"
     /\b(?:send|give)\s+(?:me|us)\s+(?:your\s+)?(?:address|location)\b/gi,
     /\b(?:meet|come|stop\s+by)\s+(?:me\s+)?(?:at|to)\s+\d/gi,
-    // SSN pattern
-    /\b\d{3}[-.\s]?\d{2}[-.\s]?\d{4}\b/g,
+    // SSN pattern — require dashes/dots to distinguish from random digits
+    /\b\d{3}[-.]\d{2}[-.]\d{4}\b/g,
     // DOB patterns: "born on", "date of birth"
     /\b(?:date\s+of\s+birth|dob|born\s+on|birthday\s+is)\b/gi,
   ];
@@ -221,115 +213,61 @@ const PROFANITY_LIST = [
   // ── Core profanity ──
   'fuck', 'fucker', 'fuckers', 'fucking', 'fucked', 'fucks', 'fuckboy', 'fuckface', 'fuckhead',
   'motherfucker', 'motherfuckers', 'motherfucking', 'mofo',
-  'shit', 'shits', 'shitty', 'shitting', 'shithead', 'shitheads', 'shithole', 'shitface', 'bullshit', 'horseshit', 'apeshit', 'dipshit', 'batshit',
-  'ass', 'asses', 'asshole', 'assholes', 'arsehole', 'arseholes', 'arse', 'dumbass', 'fatass', 'badass', 'jackass', 'smartass', 'kickass', 'hardass', 'lardass',
-  'bitch', 'bitches', 'bitchy', 'bitching', 'bitchass', 'sonofabitch',
-  'damn', 'damned', 'dammit', 'goddamn', 'goddamnit', 'goddamned',
-  'hell', 'hellhole',
-  'crap', 'crappy', 'craps',
-  'piss', 'pissed', 'pisses', 'pissing', 'pissoff',
-  'dick', 'dicks', 'dickhead', 'dickheads', 'dickface', 'dickweed',
-  'cock', 'cocks', 'cocksucker', 'cocksuckers', 'cocksucking',
+  'shit', 'shits', 'shitty', 'shitting', 'shithead', 'shitheads', 'shithole', 'shitface', 'bullshit', 'horseshit', 'dipshit',
+  'asshole', 'assholes', 'arsehole', 'arseholes',
+  'bitch', 'bitches', 'bitchy', 'bitchass', 'sonofabitch',
+  'dick', 'dicks', 'dickhead', 'dickheads',
+  'cocksucker', 'cocksuckers',
   'cunt', 'cunts',
   'twat', 'twats',
-  'wanker', 'wankers', 'wank', 'wanking',
-  'tit', 'tits', 'titties', 'titty',
-  'boob', 'boobs', 'boobies',
+  'wanker', 'wankers',
   'bastard', 'bastards',
   'slut', 'sluts', 'slutty',
-  'whore', 'whores', 'whorish',
-  'skank', 'skanks', 'skanky',
-  'ho', 'hoe', 'hoes',
-  'tramp', 'tramps',
-  'douche', 'douchebag', 'douchebags', 'douchy', 'douchenozzle',
+  'whore', 'whores',
+  'skank', 'skanks',
+  'douchebag', 'douchebags',
   'prick', 'pricks',
-  'tosser', 'tossers',
-  'bellend', 'bellends',
-  'git', 'gits',
-  'bloody',
-  'bugger', 'buggers', 'buggered',
-  'bollocks', 'bollock',
-  'sod', 'sodding', 'sodoff',
-  'blimey',
-  'crikey',
   // ── Racial / Ethnic slurs ──
-  'nigger', 'niggers', 'nigga', 'niggas', 'negro', 'negroes',
+  'nigger', 'niggers', 'nigga', 'niggas',
   'spic', 'spics', 'spick', 'spicks',
   'wetback', 'wetbacks',
   'beaner', 'beaners',
   'chink', 'chinks',
   'gook', 'gooks',
-  'jap', 'japs',
   'kike', 'kikes',
-  'cracker', 'crackers',
-  'honky', 'honkey', 'honkies',
-  'gringo', 'gringos',
-  'wop', 'wops',
-  'dago', 'dagos',
   'raghead', 'ragheads',
   'towelhead', 'towelheads',
   'sandnigger', 'sandniggers',
   'coon', 'coons',
-  'darkie', 'darkies', 'darky',
+  'darkie', 'darkies',
   'paki', 'pakis',
-  'redskin', 'redskins',
-  'halfbreed',
-  'injun',
-  'squaw',
   'chinaman',
   // ── Homophobic / Gender slurs ──
-  'fag', 'fags', 'faggot', 'faggots', 'fagging',
+  'faggot', 'faggots',
   'dyke', 'dykes',
-  'lesbo', 'lesbos',
-  'homo', 'homos',
   'tranny', 'trannies',
   'shemale', 'shemales',
-  'queer',
-  'pansy', 'pansies',
-  'sissy', 'sissies',
-  'fairy', 'fairies',
-  // ── Religious / Disability slurs ──
+  // ── Disability slurs ──
   'retard', 'retards', 'retarded',
-  'spaz', 'spazz', 'spastic',
-  'cripple', 'cripples',
-  'tard', 'tards',
-  'mongoloid', 'mongoloids',
-  'lame',
   // ── Sexual / Vulgar ──
-  'cum', 'cumshot', 'cumming', 'cummed',
-  'jizz', 'jizzed',
-  'orgasm', 'orgasms',
+  'cumshot',
+  'jizz',
   'dildo', 'dildos',
-  'vibrator',
-  'blowjob', 'blowjobs', 'bj', 'bjs',
+  'blowjob', 'blowjobs',
   'handjob', 'handjobs',
   'rimjob', 'rimjobs',
   'fellatio',
   'cunnilingus',
   'masturbate', 'masturbating', 'masturbation',
-  'jerkoff', 'jackoff',
   'porn', 'porno', 'pornography',
   'hentai',
-  'milf', 'milfs',
-  'gilf',
-  'anal',
-  'anus',
-  'penis', 'penises',
-  'vagina', 'vaginas',
-  'erection',
-  'boner', 'boners',
-  'horny',
-  'kinky',
+  'milf',
   'threesome',
   'orgy', 'orgies',
   'bondage',
-  'fetish',
-  'dominatrix',
   'sadomasochism', 'bdsm',
-  'stripper', 'strippers',
   'hooker', 'hookers',
   'prostitute', 'prostitutes', 'prostitution',
-  'escort', 'escorts',
   'pimp', 'pimps', 'pimping',
   'pedophile', 'pedophiles', 'pedo', 'pedos', 'paedophile',
   'molest', 'molester', 'molestation',
@@ -337,56 +275,22 @@ const PROFANITY_LIST = [
   'incest',
   'bestiality',
   'necrophilia',
-  'pervert', 'perverts', 'perv', 'perverted',
-  'creep', 'creepy', 'creeps',
   // ── Violence / Threat ──
-  'kill', 'killing', 'killer',
   'murder', 'murders', 'murderer',
-  'suicide', 'suicidal',
-  'stab', 'stabbing',
-  'shoot', 'shooting',
-  'bomb', 'bombing', 'bomber',
   'terrorist', 'terrorists', 'terrorism',
   'massacre',
   'genocide',
   'lynch', 'lynching',
-  'torture', 'tortured', 'torturing',
-  'strangle', 'strangled',
   'decapitate', 'decapitated', 'beheading',
   // ── Drug references ──
-  'cocaine', 'crack', 'heroin', 'meth', 'methamphetamine',
-  'ecstasy', 'molly', 'mdma',
-  'lsd', 'acid',
-  'weed', 'marijuana', 'cannabis', 'ganja',
-  'stoner', 'pothead',
-  'junkie', 'junkies',
+  'cocaine', 'heroin', 'meth', 'methamphetamine',
+  'ecstasy', 'mdma',
+  'lsd',
   'crackhead', 'crackheads',
   // ── Derogatory / Insults ──
-  'idiot', 'idiots', 'idiotic',
-  'moron', 'morons', 'moronic',
-  'stupid', 'stupidity',
-  'dumb', 'dumber', 'dumbest',
-  'loser', 'losers',
-  'pathetic',
-  'scum', 'scumbag', 'scumbags',
-  'trash', 'trashy',
-  'garbage',
-  'vermin',
-  'peasant', 'peasants',
+  'scumbag', 'scumbags',
   'lowlife', 'lowlifes',
-  'degenerate', 'degenerates',
-  'imbecile', 'imbeciles',
-  'nutjob', 'nutjobs',
-  'psycho', 'psychos',
-  'freak', 'freaks',
-  'weirdo', 'weirdos',
-  'ugly',
-  'fatso', 'fatty',
-  'pig', 'pigs',
-  'stfu', 'gtfo', 'lmfao', 'wtf', 'af', 'smh',
-  'suck', 'sucks', 'sucking',
-  'screw', 'screwed', 'screwing',
-  'crap',
+  'stfu', 'gtfo',
 ];
 
 // Build a Set for O(1) lookup (lowercase)
