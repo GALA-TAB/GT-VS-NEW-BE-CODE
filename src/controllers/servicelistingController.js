@@ -184,6 +184,7 @@ const getfilterquery = (params) => {
     matchStage.$or = [
       { keyword: { $regex: regex } },
       { title: { $regex: regex } },
+      { generatedTitle: { $regex: regex } },
       { description: { $regex: regex } },
       { spaceTitle: { $regex: regex } },
       { 'eventTypeData.name': { $regex: regex } },
@@ -192,11 +193,18 @@ const getfilterquery = (params) => {
       { 'location.city': { $regex: regex } },
       { 'location.state': { $regex: regex } },
       { 'location.country': { $regex: regex } },
+      { 'location.neighborhood': { $regex: regex } },
+      { 'serviceAddress.street': { $regex: regex } },
+      { 'serviceAddress.city': { $regex: regex } },
+      { 'serviceAddress.state': { $regex: regex } },
+      { 'serviceAddress.country': { $regex: regex } },
       { additionalInfo: { $regex: regex } },
+      { cancellationPolicy: { $regex: regex } },
       { 'vendordata.firstName': { $regex: regex } },
+      { 'vendordata.lastName': { $regex: regex } },
       { 'vendordata.email': { $regex: regex } },
       { 'vendordata.contact': { $regex: regex } },
-      { 'vendordata.lastName': { $regex: regex } },
+      { 'vendordata.companyName': { $regex: regex } },
       {
         $expr: {
           $regexMatch: {
