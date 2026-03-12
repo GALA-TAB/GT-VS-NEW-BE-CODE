@@ -8,7 +8,7 @@ const ServiceCategory = require('../models/ServiceCategory');
 const AllAmenities = [
   {
     name: "Venues Amenities",
-    serviceTypeNames: ["Venues"],
+    serviceTypeNames: ["Venue"],
     categories: [
       { name: "Bridal Suite" },
       { name: "Outdoor" },
