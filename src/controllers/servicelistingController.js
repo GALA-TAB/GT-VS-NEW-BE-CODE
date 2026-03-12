@@ -615,7 +615,8 @@ const createServiceListing = catchAsync(async (req, res, next) => {
   const serviceListing = await ServiceListing.create({
     serviceTypeId,
     vendorId,
-    instantBookingCheck
+    instantBookingCheck,
+    ...(Array.isArray(req.body.customAmenities) && { customAmenities: req.body.customAmenities })
   });
   res.locals.dataId = serviceListing._id;
 
