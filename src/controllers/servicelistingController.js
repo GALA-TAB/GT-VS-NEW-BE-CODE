@@ -788,6 +788,14 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     return next(new AppError('Invalid request', 400, { errorFields }));
   }
 
+  // If a generated title is already locked, prevent req.body from overwriting
+  // title or generatedTitle fields so the locked name is never replaced on edit.
+  const alreadyHasGeneratedTitle = !!findingServiceListing.generatedTitle;
+  if (alreadyHasGeneratedTitle) {
+    delete req.body.title;
+    delete req.body.generatedTitle;
+  }
+
   const updatedFields = {
     ...JSON.parse(JSON.stringify(findingServiceListing.toObject())),
     ...req.body
@@ -825,10 +833,10 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
   }
 
   // Auto-generate title from Listing Detection template — only once per listing.
-  // If a generatedTitle already exists it is kept as-is so edits don't produce a new name.
+  // If a generatedTitle already existed before this save it is kept as-is.
   if (
     serviceListing.completed &&
-    !serviceListing.generatedTitle &&
+    !alreadyHasGeneratedTitle &&
     (serviceListing.location?.neighborhood || serviceListing.location?.city)
   ) {
     try {
@@ -878,6 +886,14 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
   const existingListing = await ServiceListing.findOne(detailQuery).lean();
   if (!existingListing) {
     return next(new AppError('No service listing found with this ID.', 404));
+  }
+
+  // If a generated title is already locked, prevent req.body from overwriting
+  // title or generatedTitle fields so the locked name is never replaced on edit.
+  const detailAlreadyHasGeneratedTitle = !!existingListing.generatedTitle;
+  if (detailAlreadyHasGeneratedTitle) {
+    delete req.body.title;
+    delete req.body.generatedTitle;
   }
 
   // Use the listing's vendorId (not req.user._id) for moderation
@@ -1086,9 +1102,9 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
   }
 
   // Auto-generate title from Listing Detection template — only once per listing.
-  // If a generatedTitle already exists it is kept as-is so edits don't produce a new name.
+  // If a generatedTitle already existed before this save it is kept as-is.
   if (
-    !serviceListing.generatedTitle &&
+    !detailAlreadyHasGeneratedTitle &&
     (serviceListing.location?.neighborhood || serviceListing.location?.city)
   ) {
     try {
