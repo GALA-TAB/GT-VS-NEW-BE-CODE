@@ -788,9 +788,11 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     return next(new AppError('Invalid request', 400, { errorFields }));
   }
 
-  // If a generated title is already locked, prevent it from ever being overwritten on edit.
-  const alreadyHasGeneratedTitle = !!findingServiceListing.generatedTitle;
-  if (alreadyHasGeneratedTitle) {
+  // Lock the title once it has been set (generated or otherwise).
+  // Check both `generatedTitle` (new field) AND `title` (covers listings created
+  // before generatedTitle was introduced — they won't have generatedTitle set).
+  const alreadyHasTitle = !!(findingServiceListing.generatedTitle || findingServiceListing.title);
+  if (alreadyHasTitle) {
     delete req.body.title;
     delete req.body.generatedTitle;
   }
@@ -800,10 +802,10 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     ...req.body
   };
 
-  // Explicitly re-lock title after the spread to be absolutely sure nothing overwrote it.
-  if (alreadyHasGeneratedTitle) {
+  // Explicitly re-lock title after the spread — belt-and-suspenders.
+  if (alreadyHasTitle) {
     updatedFields.title = findingServiceListing.title;
-    updatedFields.generatedTitle = findingServiceListing.generatedTitle;
+    updatedFields.generatedTitle = findingServiceListing.generatedTitle || findingServiceListing.title;
   }
 
   // Note: 'title' is NOT in this list — it is auto-generated from the listing
@@ -837,11 +839,10 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // Auto-generate title from Listing Detection template — only once per listing.
-  // If a generatedTitle already existed before this save it is kept as-is.
+  // Auto-generate title from Listing Detection template — only when no title exists at all.
   if (
     serviceListing.completed &&
-    !alreadyHasGeneratedTitle &&
+    !alreadyHasTitle &&
     (serviceListing.location?.neighborhood || serviceListing.location?.city)
   ) {
     try {
@@ -893,10 +894,11 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // If a generated title is already locked, prevent req.body from overwriting
-  // title or generatedTitle fields so the locked name is never replaced on edit.
-  const detailAlreadyHasGeneratedTitle = !!existingListing.generatedTitle;
-  if (detailAlreadyHasGeneratedTitle) {
+  // Lock the title once it has been set (generated or otherwise).
+  // Check both `generatedTitle` AND `title` to cover listings created before
+  // generatedTitle was introduced.
+  const detailAlreadyHasTitle = !!(existingListing.generatedTitle || existingListing.title);
+  if (detailAlreadyHasTitle) {
     delete req.body.title;
     delete req.body.generatedTitle;
   }
@@ -1106,20 +1108,20 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // If the title was already locked, explicitly restore it in case the update
-  // somehow changed it (belt-and-suspenders safety on top of the req.body delete above).
-  if (detailAlreadyHasGeneratedTitle && existingListing.title) {
+  // Belt-and-suspenders: if title was already set, force it back after update.
+  if (detailAlreadyHasTitle && existingListing.title) {
+    const lockedTitle = existingListing.title;
+    const lockedGenerated = existingListing.generatedTitle || existingListing.title;
     await ServiceListing.findByIdAndUpdate(serviceListing._id, {
-      $set: { title: existingListing.title, generatedTitle: existingListing.generatedTitle }
+      $set: { title: lockedTitle, generatedTitle: lockedGenerated }
     });
-    serviceListing.title = existingListing.title;
-    serviceListing.generatedTitle = existingListing.generatedTitle;
+    serviceListing.title = lockedTitle;
+    serviceListing.generatedTitle = lockedGenerated;
   }
 
-  // Auto-generate title from Listing Detection template — only once per listing.
-  // If a generatedTitle already existed before this save it is kept as-is.
+  // Auto-generate title — only when no title exists at all.
   if (
-    !detailAlreadyHasGeneratedTitle &&
+    !detailAlreadyHasTitle &&
     (serviceListing.location?.neighborhood || serviceListing.location?.city)
   ) {
     try {
