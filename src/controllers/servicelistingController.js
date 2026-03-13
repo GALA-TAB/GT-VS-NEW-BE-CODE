@@ -788,8 +788,7 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     return next(new AppError('Invalid request', 400, { errorFields }));
   }
 
-  // If a generated title is already locked, prevent req.body from overwriting
-  // title or generatedTitle fields so the locked name is never replaced on edit.
+  // If a generated title is already locked, prevent it from ever being overwritten on edit.
   const alreadyHasGeneratedTitle = !!findingServiceListing.generatedTitle;
   if (alreadyHasGeneratedTitle) {
     delete req.body.title;
@@ -800,6 +799,12 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     ...JSON.parse(JSON.stringify(findingServiceListing.toObject())),
     ...req.body
   };
+
+  // Explicitly re-lock title after the spread to be absolutely sure nothing overwrote it.
+  if (alreadyHasGeneratedTitle) {
+    updatedFields.title = findingServiceListing.title;
+    updatedFields.generatedTitle = findingServiceListing.generatedTitle;
+  }
 
   // Note: 'title' is NOT in this list — it is auto-generated from the listing
   // detection template (style descriptor + service type + neighborhood) and must
@@ -1099,6 +1104,16 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
 
   if (!serviceListing) {
     return next(new AppError('No service listing found with this ID.', 404));
+  }
+
+  // If the title was already locked, explicitly restore it in case the update
+  // somehow changed it (belt-and-suspenders safety on top of the req.body delete above).
+  if (detailAlreadyHasGeneratedTitle && existingListing.title) {
+    await ServiceListing.findByIdAndUpdate(serviceListing._id, {
+      $set: { title: existingListing.title, generatedTitle: existingListing.generatedTitle }
+    });
+    serviceListing.title = existingListing.title;
+    serviceListing.generatedTitle = existingListing.generatedTitle;
   }
 
   // Auto-generate title from Listing Detection template — only once per listing.
