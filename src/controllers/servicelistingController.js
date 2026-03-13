@@ -788,8 +788,8 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     return next(new AppError('Invalid request', 400, { errorFields }));
   }
 
-  // TITLE LOCK: always strip title and generatedTitle from the update body.
-  // Title is set once via a conditional DB update below and must never be overwritten by edits.
+  // TITLE LOCK: remove title and generatedTitle from updatedFields entirely.
+  // They are NEVER written by the main update — only managed below.
   delete req.body.title;
   delete req.body.generatedTitle;
 
@@ -798,10 +798,10 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     ...req.body
   };
 
-  // Hard-restore title/generatedTitle from the pre-update document so they
-  // are never accidentally cleared by the spread or any downstream logic.
-  updatedFields.title = findingServiceListing.title || undefined;
-  updatedFields.generatedTitle = findingServiceListing.generatedTitle || undefined;
+  // Strip title/generatedTitle and _id — they must not be part of the $set.
+  delete updatedFields.title;
+  delete updatedFields.generatedTitle;
+  delete updatedFields._id;
 
   // Note: 'title' is NOT in this list — it is auto-generated from the listing
   // detection template (style descriptor + service type + neighborhood) and must
@@ -826,7 +826,7 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
   }
   console.log('updatedFields......', updatedFields);
 
-  const serviceListing = await ServiceListing.findOneAndUpdate(query, updatedFields, {
+  const serviceListing = await ServiceListing.findOneAndUpdate(query, { $set: updatedFields }, {
     new: true,
     runValidators: true
   });
@@ -834,20 +834,25 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // Auto-generate title — only when no title exists at all.
-  // The updateOne query includes `title: { $in: [null, '', undefined] }` so the
-  // DB itself refuses to overwrite any existing title regardless of app-level state.
-  if (
+  // ── Title management (completely separate from the main update) ──────────
+  if (findingServiceListing.title) {
+    // Title already exists: restore it unconditionally via $set so nothing can wipe it.
+    await ServiceListing.updateOne(
+      { _id: serviceListing._id },
+      { $set: { title: findingServiceListing.title, generatedTitle: findingServiceListing.generatedTitle || findingServiceListing.title } }
+    );
+    serviceListing.title = findingServiceListing.title;
+    serviceListing.generatedTitle = findingServiceListing.generatedTitle || findingServiceListing.title;
+  } else if (
     serviceListing.completed &&
-    !findingServiceListing.title &&
     (serviceListing.location?.neighborhood || serviceListing.location?.city)
   ) {
+    // No title yet — generate one. DB-level conditional prevents double-write.
     try {
       const populatedListing = await ServiceListing.findById(serviceListing._id)
         .populate('serviceTypeId', 'name');
       const genTitle = await generateTitleForListing(populatedListing);
       if (genTitle) {
-        // Conditional update: only writes title when no title exists in the DB yet.
         await ServiceListing.updateOne(
           { _id: serviceListing._id, $or: [{ title: { $exists: false } }, { title: null }, { title: '' }] },
           { $set: { title: genTitle, generatedTitle: genTitle, VerificationStatus: 'pending' } }
@@ -891,8 +896,7 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // TITLE LOCK: always strip title and generatedTitle from the update body so
-  // they are never overwritten during any edit, regardless of what the FE sends.
+  // TITLE LOCK: strip title and generatedTitle so the main update never touches them.
   delete req.body.title;
   delete req.body.generatedTitle;
 
@@ -1090,7 +1094,7 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
 
   const serviceListing = await ServiceListing.findOneAndUpdate(
     detailQuery,
-    req.body,
+    { $set: req.body },
     {
       new: true,
       runValidators: true
@@ -1101,27 +1105,22 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // Restore locked title (belt-and-suspenders — ensures the main update never blanked it).
+  // ── Title management (completely separate from the main update) ──────────
   if (existingListing.title) {
+    // Title already exists: restore it unconditionally so nothing can wipe it.
     await ServiceListing.updateOne(
       { _id: serviceListing._id },
       { $set: { title: existingListing.title, generatedTitle: existingListing.generatedTitle || existingListing.title } }
     );
     serviceListing.title = existingListing.title;
     serviceListing.generatedTitle = existingListing.generatedTitle || existingListing.title;
-  }
-
-  // Auto-generate title — only when no title exists at all (DB-level guard prevents overwrite).
-  if (
-    !existingListing.title &&
-    (serviceListing.location?.neighborhood || serviceListing.location?.city)
-  ) {
+  } else if (serviceListing.location?.neighborhood || serviceListing.location?.city) {
+    // No title yet — generate one. DB-level conditional prevents double-write.
     try {
       const populatedListing = await ServiceListing.findById(serviceListing._id)
         .populate('serviceTypeId', 'name');
       const genTitle = await generateTitleForListing(populatedListing);
       if (genTitle) {
-        // Conditional update: only writes when no title exists in the DB yet.
         await ServiceListing.updateOne(
           { _id: serviceListing._id, $or: [{ title: { $exists: false } }, { title: null }, { title: '' }] },
           { $set: { title: genTitle, generatedTitle: genTitle, VerificationStatus: 'pending' } }
