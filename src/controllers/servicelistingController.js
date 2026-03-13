@@ -788,8 +788,8 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     return next(new AppError('Invalid request', 400, { errorFields }));
   }
 
-  // TITLE LOCK: remove title and generatedTitle from updatedFields entirely.
-  // They are NEVER written by the main update — only managed below.
+  // TITLE LOCK: strip title/generatedTitle from the update body.
+  // The model-level pre-hook provides an additional DB-layer guard.
   delete req.body.title;
   delete req.body.generatedTitle;
 
@@ -798,7 +798,7 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     ...req.body
   };
 
-  // Strip title/generatedTitle and _id — they must not be part of the $set.
+  // Ensure title/generatedTitle are absent from the $set payload.
   delete updatedFields.title;
   delete updatedFields.generatedTitle;
   delete updatedFields._id;
@@ -834,27 +834,22 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // ── Title management (completely separate from the main update) ──────────
-  if (findingServiceListing.title) {
-    // Title already exists: restore it unconditionally via $set so nothing can wipe it.
-    await ServiceListing.updateOne(
-      { _id: serviceListing._id },
-      { $set: { title: findingServiceListing.title, generatedTitle: findingServiceListing.generatedTitle || findingServiceListing.title } }
-    );
-    serviceListing.title = findingServiceListing.title;
-    serviceListing.generatedTitle = findingServiceListing.generatedTitle || findingServiceListing.title;
-  } else if (
+  // ── Title: first-time generation only ───────────────────────────
+  // Only runs when the listing had NO title before this save.
+  // The model pre-hook prevents any future update from changing the title.
+  if (
+    !findingServiceListing.title &&
     serviceListing.completed &&
     (serviceListing.location?.neighborhood || serviceListing.location?.city)
   ) {
-    // No title yet — generate one. DB-level conditional prevents double-write.
     try {
       const populatedListing = await ServiceListing.findById(serviceListing._id)
         .populate('serviceTypeId', 'name');
       const genTitle = await generateTitleForListing(populatedListing);
       if (genTitle) {
+        // The pre-hook allows this because the doc has no title yet.
         await ServiceListing.updateOne(
-          { _id: serviceListing._id, $or: [{ title: { $exists: false } }, { title: null }, { title: '' }] },
+          { _id: serviceListing._id },
           { $set: { title: genTitle, generatedTitle: genTitle, VerificationStatus: 'pending' } }
         );
         serviceListing.title = genTitle;
@@ -896,7 +891,8 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // TITLE LOCK: strip title and generatedTitle so the main update never touches them.
+  // TITLE LOCK: strip title/generatedTitle so the main update never touches them.
+  // The model-level pre-hook is the DB-layer enforcer for all future saves.
   delete req.body.title;
   delete req.body.generatedTitle;
 
@@ -1105,24 +1101,20 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // ── Title management (completely separate from the main update) ──────────
-  if (existingListing.title) {
-    // Title already exists: restore it unconditionally so nothing can wipe it.
-    await ServiceListing.updateOne(
-      { _id: serviceListing._id },
-      { $set: { title: existingListing.title, generatedTitle: existingListing.generatedTitle || existingListing.title } }
-    );
-    serviceListing.title = existingListing.title;
-    serviceListing.generatedTitle = existingListing.generatedTitle || existingListing.title;
-  } else if (serviceListing.location?.neighborhood || serviceListing.location?.city) {
-    // No title yet — generate one. DB-level conditional prevents double-write.
+  // ── Title: first-time generation only ───────────────────────────
+  // Only runs when the listing had NO title before this save.
+  // The model pre-hook prevents any future update from changing the title.
+  if (
+    !existingListing.title &&
+    (serviceListing.location?.neighborhood || serviceListing.location?.city)
+  ) {
     try {
       const populatedListing = await ServiceListing.findById(serviceListing._id)
         .populate('serviceTypeId', 'name');
       const genTitle = await generateTitleForListing(populatedListing);
       if (genTitle) {
         await ServiceListing.updateOne(
-          { _id: serviceListing._id, $or: [{ title: { $exists: false } }, { title: null }, { title: '' }] },
+          { _id: serviceListing._id },
           { $set: { title: genTitle, generatedTitle: genTitle, VerificationStatus: 'pending' } }
         );
         serviceListing.title = genTitle;

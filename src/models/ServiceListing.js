@@ -291,6 +291,64 @@ const ServiceListingSchema = new mongoose.Schema(
     virtuals: true
   }
 );
+// ── Title Immutability Hook ──────────────────────────────────────────────────
+// Once `title` is set on a listing it must never change via any update path.
+// This hook fires on findOneAndUpdate and strips title/generatedTitle from the
+// update payload whenever the matched document already has a title in the DB.
+ServiceListingSchema.pre('findOneAndUpdate', async function (next) {
+  try {
+    const update = this.getUpdate();
+    const setBlock = update?.$set || update;
+    const incomingTitle = setBlock?.title;
+    const incomingGenerated = setBlock?.generatedTitle;
+
+    // If this update is not touching title fields at all, skip the lookup.
+    if (incomingTitle === undefined && incomingGenerated === undefined) return next();
+
+    // Fetch only the title of the existing document.
+    const existing = await this.model.findOne(this.getFilter(), { title: 1 }).lean();
+    if (existing?.title) {
+      // Document already has a title — strip the incoming values so it can never change.
+      if (update.$set) {
+        delete update.$set.title;
+        delete update.$set.generatedTitle;
+      } else {
+        delete update.title;
+        delete update.generatedTitle;
+      }
+    }
+    next();
+  } catch (e) {
+    next(e);
+  }
+});
+
+ServiceListingSchema.pre('updateOne', async function (next) {
+  try {
+    const update = this.getUpdate();
+    const setBlock = update?.$set || update;
+    const incomingTitle = setBlock?.title;
+    const incomingGenerated = setBlock?.generatedTitle;
+
+    if (incomingTitle === undefined && incomingGenerated === undefined) return next();
+
+    const existing = await this.model.findOne(this.getFilter(), { title: 1 }).lean();
+    if (existing?.title) {
+      if (update.$set) {
+        delete update.$set.title;
+        delete update.$set.generatedTitle;
+      } else {
+        delete update.title;
+        delete update.generatedTitle;
+      }
+    }
+    next();
+  } catch (e) {
+    next(e);
+  }
+});
+// ────────────────────────────────────────────────────────────────────────────
+
 ServiceListingSchema.pre('findOneAndUpdate', function (next) {
   const update = this.getUpdate();
 
