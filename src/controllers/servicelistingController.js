@@ -824,9 +824,13 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // Auto-generate title from Listing Detection template.
-  // The generated title REPLACES the vendor's title to prevent personal info in titles.
-  if (serviceListing.completed && (serviceListing.location?.neighborhood || serviceListing.location?.city)) {
+  // Auto-generate title from Listing Detection template — only once per listing.
+  // If a generatedTitle already exists it is kept as-is so edits don't produce a new name.
+  if (
+    serviceListing.completed &&
+    !serviceListing.generatedTitle &&
+    (serviceListing.location?.neighborhood || serviceListing.location?.city)
+  ) {
     try {
       const populatedListing = await ServiceListing.findById(serviceListing._id)
         .populate('serviceTypeId', 'name');
@@ -1081,9 +1085,12 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // Auto-generate title from Listing Detection template.
-  // The generated title REPLACES the vendor's title to prevent personal info in titles.
-  if (serviceListing.location?.neighborhood || serviceListing.location?.city) {
+  // Auto-generate title from Listing Detection template — only once per listing.
+  // If a generatedTitle already exists it is kept as-is so edits don't produce a new name.
+  if (
+    !serviceListing.generatedTitle &&
+    (serviceListing.location?.neighborhood || serviceListing.location?.city)
+  ) {
     try {
       const populatedListing = await ServiceListing.findById(serviceListing._id)
         .populate('serviceTypeId', 'name');
