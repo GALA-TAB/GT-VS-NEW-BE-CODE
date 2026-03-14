@@ -824,7 +824,8 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
   if (title || description || media) {
     updatedFields.VerificationStatus = 'pending';
   }
-  console.log('updatedFields......', updatedFields);
+  console.log('[updateServiceListing] req.body.customAmenities:', JSON.stringify(req.body.customAmenities));
+  console.log('[updateServiceListing] updatedFields.customAmenities:', JSON.stringify(updatedFields.customAmenities));
 
   const serviceListing = await ServiceListing.findOneAndUpdate(query, { $set: updatedFields }, {
     new: true,
@@ -833,6 +834,7 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
   if (!serviceListing) {
     return next(new AppError('No service listing found with this ID.', 404));
   }
+  console.log('[updateServiceListing] SAVED customAmenities:', JSON.stringify(serviceListing.customAmenities));
 
   // ── Title: first-time generation only ───────────────────────────
   // Only runs when the listing had NO title before this save.
