@@ -835,13 +835,16 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // Explicitly save customAmenities if provided (findOneAndUpdate $set can be unreliable with large objects)
+  // Explicitly save customAmenities using direct MongoDB operation (bypasses Mongoose hooks)
   if (Array.isArray(req.body.customAmenities)) {
+    await ServiceListing.collection.updateOne(
+      { _id: serviceListing._id },
+      { $set: { customAmenities: req.body.customAmenities } }
+    );
     serviceListing.customAmenities = req.body.customAmenities;
-    await serviceListing.save();
-    console.log('[updateServiceListing] Explicitly saved customAmenities:', JSON.stringify(serviceListing.customAmenities));
+    console.log('[updateServiceListing] Direct-saved customAmenities:', JSON.stringify(req.body.customAmenities));
   }
-  console.log('[updateServiceListing] SAVED customAmenities:', JSON.stringify(serviceListing.customAmenities));
+  console.log('[updateServiceListing] FINAL customAmenities:', JSON.stringify(serviceListing.customAmenities));
 
   // ── Title: first-time generation only ───────────────────────────
   // Only runs when the listing had NO title before this save.
