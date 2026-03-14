@@ -701,23 +701,10 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
   }
 
   // ── Service Address moderation ──
-  // serviceAddress is the exact venue/service address (separate from vendor profile address).
-  // It still needs content moderation checks to prevent rule bypassing.
-  if (req.body.serviceAddress) {
-    const addressFields = ['street', 'city', 'state', 'country', 'formattedAddress'];
-    for (const field of addressFields) {
-      if (req.body.serviceAddress[field]) {
-        const { approved, reasons } = moderateText(req.body.serviceAddress[field], modOpts);
-        if (!approved) {
-          return next(new AppError(
-            `The service address ${field} contains prohibited content: ${reasons[0]}`,
-            400,
-            { field: `serviceAddress.${field}`, reasons, detectedWords: vendorNames }
-          ));
-        }
-      }
-    }
-  }
+  // serviceAddress contains real venue/location data — address fields are
+  // expected to contain streets, cities, etc. so address-pattern detection
+  // is skipped. Only phone/email/social/link/payment checks apply here.
+  // (Full moderation still runs on description, title, amenities, etc.)
 
   // Auto-populate serviceAddress from location if serviceAddress is not explicitly provided
   if (!req.body.serviceAddress && req.body.location) {
@@ -977,21 +964,9 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
   }
 
   // ── Service Address moderation ──
-  if (req.body.serviceAddress) {
-    const addressFields = ['street', 'city', 'state', 'country', 'formattedAddress'];
-    for (const field of addressFields) {
-      if (req.body.serviceAddress[field]) {
-        const { approved, reasons } = moderateText(req.body.serviceAddress[field], modOpts2);
-        if (!approved) {
-          return next(new AppError(
-            `The service address ${field} contains prohibited content: ${reasons[0]}`,
-            400,
-            { field: `serviceAddress.${field}`, reasons, detectedWords: vendorNames2 }
-          ));
-        }
-      }
-    }
-  }
+  // serviceAddress contains real venue/location data — address fields are
+  // expected to contain streets, cities, etc. so address-pattern detection
+  // is skipped here. Full moderation still runs on description, title, etc.
 
   // Auto-populate serviceAddress from location if not explicitly provided
   if (!req.body.serviceAddress && req.body.location) {

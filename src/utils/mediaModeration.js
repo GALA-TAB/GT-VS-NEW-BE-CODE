@@ -477,10 +477,11 @@ const CONTACT_PATTERNS = [
   { category: CAT.QR, pattern: /\bscan\s+(?:this|the|my)\s+(?:code|qr)\b/gi },
 
   /* ────────── 12. PHYSICAL ADDRESSES ────────── */
-  { category: CAT.ADDRESS, pattern: /\b\d{1,5}\s+[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|hwy|highway)\b/gi },
-  // Apartment / unit / suite
-  { category: CAT.ADDRESS, pattern: /\b(?:apt|apartment|unit|suite|ste|#)\s*\.?\s*\d{1,5}[a-zA-Z]?\b/gi },
-  // Zip codes (5-digit or ZIP+4, keyword-gated to reduce false positives)
+  // Require strong intent context before a numbered street address to avoid
+  // false positives in venue descriptions (e.g. "We're on Oak Avenue").
+  // Bare numbered addresses without explicit sharing intent are allowed.
+  { category: CAT.ADDRESS, pattern: /\b(?:(?:my|our|the)\s+(?:address|location|place)\s+(?:is|at)|located\s+at|find\s+(?:us|me)\s+at|directions?\s*:)\s*\d{1,5}\s+[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|hwy|highway)\b/gi },
+  // Zip codes (keyword-gated to reduce false positives)
   { category: CAT.ADDRESS, pattern: /\b(?:zip|postal|zip\s*code)\s*:?\s*\d{5}(?:-\d{4})?\b/gi },
   // "send me your address" / "meet me at…" / "come to…"
   { category: CAT.ADDRESS, pattern: /\b(?:send\s+(?:me\s+)?(?:your|the)\s+address|meet\s+me\s+at|come\s+to\s+(?:my|the|our))\b/gi },
@@ -1002,8 +1003,10 @@ function moderateText(text, opts = {}) {
 
   // For direct text moderation (not OCR), skip the quality gate —
   // this IS real user-typed text, not noisy OCR output.
+  // Note: detectSignsAndStorefronts is intentionally NOT called here —
+  // it is an OCR-specific check designed for photo frames, not typed text.
+  // Calling it on typed descriptions causes false positives (e.g. "Oak Avenue").
   const contactReasons   = detectContactInfo(text);
-  const signReasons      = detectSignsAndStorefronts(text);
 
   // Check company name and any additional vendor names (fullName, etc.)
   let companyReasons = [];
@@ -1019,7 +1022,7 @@ function moderateText(text, opts = {}) {
     }
   }
 
-  const allReasons   = [...contactReasons, ...signReasons, ...companyReasons];
+  const allReasons   = [...contactReasons, ...companyReasons];
   const uniqueReasons = [...new Set(allReasons)];
 
   return {
