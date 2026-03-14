@@ -834,6 +834,13 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
   if (!serviceListing) {
     return next(new AppError('No service listing found with this ID.', 404));
   }
+
+  // Explicitly save customAmenities if provided (findOneAndUpdate $set can be unreliable with large objects)
+  if (Array.isArray(req.body.customAmenities)) {
+    serviceListing.customAmenities = req.body.customAmenities;
+    await serviceListing.save();
+    console.log('[updateServiceListing] Explicitly saved customAmenities:', JSON.stringify(serviceListing.customAmenities));
+  }
   console.log('[updateServiceListing] SAVED customAmenities:', JSON.stringify(serviceListing.customAmenities));
 
   // ── Title: first-time generation only ───────────────────────────
