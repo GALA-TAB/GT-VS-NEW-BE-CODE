@@ -764,12 +764,17 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     }
   }
 
+  console.log('[updateServiceListing] req.body keys:', Object.keys(req.body));
+  console.log('[updateServiceListing] req.body.location:', JSON.stringify(req.body.location));
+  console.log('[updateServiceListing] req.body.serviceAddress:', JSON.stringify(req.body.serviceAddress));
+
   const { error } = serviceupdateSchema.validate(req.body, {
     allowUnknown: true,
     abortEarly: false
   });
 
   if (error) {
+    console.error('[updateServiceListing] Joi validation error:', JSON.stringify(error.details));
     const errorFields = joiError(error);
 
     return next(new AppError('Invalid request', 400, { errorFields }));
