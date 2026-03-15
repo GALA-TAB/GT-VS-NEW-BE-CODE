@@ -352,38 +352,46 @@ ServiceListingSchema.pre('updateOne', async function (next) {
 ServiceListingSchema.pre('findOneAndUpdate', function (next) {
   const update = this.getUpdate();
 
-  // Handle location updates with coordinate conversion
-  if (update?.location) {
-    console.log('Update location data:', update.location);
+  // Resolve the location object whether it lives at update.location or update.$set.location
+  const loc = update?.location || update?.$set?.location;
+
+  if (loc) {
+    console.log('Update location data:', loc);
     
     let lat, lng, radius;
     
     // Handle case where latitude and longitude are provided
-    if (update.location.latitude !== undefined && update.location.longitude !== undefined) {
-      lat = parseFloat(update.location.latitude);
-      lng = parseFloat(update.location.longitude);
-      radius = parseFloat(update.location.radius) || 0;
+    if (loc.latitude !== undefined && loc.longitude !== undefined) {
+      lat = parseFloat(loc.latitude);
+      lng = parseFloat(loc.longitude);
+      radius = parseFloat(loc.radius) || 0;
     }
     // Handle case where coordinates array is provided but might contain strings
-    else if (update.location.coordinates && Array.isArray(update.location.coordinates)) {
-      lng = parseFloat(update.location.coordinates[0]);
-      lat = parseFloat(update.location.coordinates[1]);
-      radius = parseFloat(update.location.radius) || 0;
+    else if (loc.coordinates && Array.isArray(loc.coordinates)) {
+      lng = parseFloat(loc.coordinates[0]);
+      lat = parseFloat(loc.coordinates[1]);
+      radius = parseFloat(loc.radius) || 0;
     }
 
     // If we have valid coordinates, ensure they are properly formatted
     if (!isNaN(lat) && !isNaN(lng)) {
       // Ensure coordinates are valid numbers
       if (isFinite(lat) && isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
-        update.location = {
-          ...update.location,
+        const converted = {
+          ...loc,
           type: 'Point',
           coordinates: [lng, lat], // GeoJSON requires [lng, lat] as numbers
           longitude: lng,
           latitude: lat,
           radius: radius
         };
-        console.log('Converted coordinates:', update.location.coordinates);
+        // Write back to whichever path the location lives at
+        if (update?.$set?.location) {
+          update.$set.location = converted;
+        } else {
+          update.location = converted;
+        }
+        console.log('Converted coordinates:', converted.coordinates);
       } else {
         console.error('Invalid coordinates detected:', { lat, lng });
         return next(new Error('Invalid coordinates provided'));
