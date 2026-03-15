@@ -785,10 +785,12 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     ...req.body
   };
 
-  // Ensure title/generatedTitle are absent from the $set payload.
+  // Ensure title/generatedTitle and internal fields are absent from the $set payload.
   delete updatedFields.title;
   delete updatedFields.generatedTitle;
   delete updatedFields._id;
+  delete updatedFields.id;
+  delete updatedFields.__v;
 
   // Note: 'title' is NOT in this list — it is auto-generated from the listing
   // detection template (style descriptor + service type + neighborhood) and must
@@ -811,7 +813,6 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
   if (title || description || media) {
     updatedFields.VerificationStatus = 'pending';
   }
-  console.log('[updateServiceListing] req.body.customAmenities:', JSON.stringify(req.body.customAmenities));
   console.log('[updateServiceListing] updatedFields.customAmenities:', JSON.stringify(updatedFields.customAmenities));
 
   const serviceListing = await ServiceListing.findOneAndUpdate(query, { $set: updatedFields }, {
@@ -822,16 +823,14 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
     return next(new AppError('No service listing found with this ID.', 404));
   }
 
-  // Explicitly save customAmenities using direct MongoDB operation (bypasses Mongoose hooks)
+  // Explicitly save customAmenities using direct MongoDB operation to ensure persistence
   if (Array.isArray(req.body.customAmenities)) {
     await ServiceListing.collection.updateOne(
       { _id: serviceListing._id },
       { $set: { customAmenities: req.body.customAmenities } }
     );
     serviceListing.customAmenities = req.body.customAmenities;
-    console.log('[updateServiceListing] Direct-saved customAmenities:', JSON.stringify(req.body.customAmenities));
   }
-  console.log('[updateServiceListing] FINAL customAmenities:', JSON.stringify(serviceListing.customAmenities));
 
   // ── Title: first-time generation only ───────────────────────────
   // Only runs when the listing had NO title before this save.
