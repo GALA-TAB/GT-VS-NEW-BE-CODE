@@ -42,7 +42,8 @@ const {
   suspensionRoute,
   chatViolationRoute,
   adminNoteRoute,
-  venueDetectionRoute
+  venueDetectionRoute,
+  sharedCartPaymentRoute
 } = require('../routes');
 
 const otherRoutes = require('./otherRoutes');
@@ -113,6 +114,7 @@ module.exports = (app) => {
   app.use('/api/inbox-detection', chatViolationRoute);
   app.use('/api/admin-note', adminNoteRoute);
   app.use('/api/listing-detection', venueDetectionRoute);
+  app.use('/api/shared-cart-payment', sharedCartPaymentRoute);
   otherRoutes(app);
 };
                                                                                       

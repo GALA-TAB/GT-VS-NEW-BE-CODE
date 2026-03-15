@@ -41,3 +41,4 @@ exports.suspensionRoute = require('./suspensionRoute');
 exports.chatViolationRoute = require('./chatViolationRoute');
 exports.adminNoteRoute = require('./adminNoteRoute');
 exports.venueDetectionRoute = require('./venueDetectionRoute');
+exports.sharedCartPaymentRoute = require('./sharedCartPaymentRoute');
