@@ -56,6 +56,10 @@ const locationSchema = Joi.object({
     latitude: Joi.number().messages({
         'any.required': 'Latitude is required.',
         'number.base': 'Latitude must be a number.'
+    }),
+    radius: Joi.number().min(0).optional().messages({
+        'number.base': 'Radius must be a number.',
+        'number.min': 'Radius cannot be negative.'
     })
 });
 
