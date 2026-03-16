@@ -17,6 +17,7 @@ const {
     VerifyServiceListing,
     getServiceListingsByStatus,
     getVerificationLogs,
+    getServiceListingStatusCounts,
 } = require('../controllers/servicelistingController');
 const requireAuth = require('../middlewares/requireAuth');
 const optionalAuth = require('../middlewares/optionalAuth');
@@ -33,6 +34,7 @@ router.route('/').post(requireAuth, restrictTo(["vendor", "admin"],{
 router.route("/map").get(getoverallServiceListings);
 router.route("/all").get(requireAuth, restrictTo(["admin"]),getAllService);
 router.route("/by-status").get(requireAuth, restrictTo(["admin"]), getServiceListingsByStatus);
+router.route("/status-counts").get(requireAuth, restrictTo(["admin"]), getServiceListingStatusCounts);
 router.route("/verification-logs").get(requireAuth, restrictTo(["admin"]), getVerificationLogs);
 router.route("/verify/:id").post(requireAuth, restrictTo(["admin"]),logActionMiddleware('Verify service', 'ServiceListing'), VerifyServiceListing);
 router.route("/serviceTitle").get(requireAuth, restrictTo(["vendor", "admin"]),  getServiceListingTitle);

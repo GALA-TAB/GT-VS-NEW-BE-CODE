@@ -2145,16 +2145,30 @@ const getServiceListingsByStatus = catchAsync(async (req, res) => {
   const pageNum = parseInt(page, 10);
   const limitNum = parseInt(limit, 10);
 
-  const matchStage = {
-    VerificationStatus: verificationStatus,
-    isDeleted: { $ne: true }
-  };
+  // For 'pending', also match documents with null/missing VerificationStatus
+  let statusFilter;
+  if (verificationStatus === 'pending') {
+    statusFilter = {
+      $or: [
+        { VerificationStatus: 'pending' },
+        { VerificationStatus: { $exists: false } },
+        { VerificationStatus: null }
+      ]
+    };
+  } else {
+    statusFilter = { VerificationStatus: verificationStatus };
+  }
+
+  const softDeleteFilter = withSoftDeleteFilter({}, false);
+  const matchStage = { $and: [softDeleteFilter, statusFilter] };
 
   if (keyword) {
-    matchStage.$or = [
-      { title: { $regex: keyword, $options: 'i' } },
-      { generatedTitle: { $regex: keyword, $options: 'i' } }
-    ];
+    matchStage.$and.push({
+      $or: [
+        { title: { $regex: keyword, $options: 'i' } },
+        { generatedTitle: { $regex: keyword, $options: 'i' } }
+      ]
+    });
   }
 
   // Sorting: verified → newest verified first, pending → oldest first, notVerified → newest first
@@ -2271,6 +2285,43 @@ const getVerificationLogs = catchAsync(async (req, res) => {
   });
 });
 
+/**
+ * GET /servicelisting/status-counts
+ * Returns counts for all three verification statuses in a single call.
+ */
+const getServiceListingStatusCounts = catchAsync(async (req, res) => {
+  const softDeleteFilter = withSoftDeleteFilter({}, false);
+
+  const pipeline = [
+    { $match: softDeleteFilter },
+    {
+      $group: {
+        _id: {
+          $ifNull: ['$VerificationStatus', 'pending']
+        },
+        count: { $sum: 1 }
+      }
+    }
+  ];
+
+  const results = await ServiceListing.aggregate(pipeline);
+
+  const counts = { verified: 0, pending: 0, notVerified: 0 };
+  for (const r of results) {
+    if (r._id === 'verified' || r._id === 'pending' || r._id === 'notVerified') {
+      counts[r._id] = r.count;
+    } else {
+      // Any unknown/null status counts as pending
+      counts.pending += r.count;
+    }
+  }
+
+  return res.status(200).json({
+    status: 'success',
+    data: counts
+  });
+});
+
 module.exports = {
   getAllServiceListings,
   createServiceListing,
@@ -2288,5 +2339,6 @@ module.exports = {
   getAllService,
   VerifyServiceListing,
   getServiceListingsByStatus,
-  getVerificationLogs
+  getVerificationLogs,
+  getServiceListingStatusCounts
 };
