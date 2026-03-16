@@ -230,6 +230,20 @@ const ServiceListingSchema = new mongoose.Schema(
       enum: ['verified', 'notVerified', 'pending'],
       default: 'pending'
     },
+    verifiedAt: {
+      type: Date,
+      default: null
+    },
+    verifiedByAdminId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null
+    },
+    verifiedByAdminName: {
+      type: String,
+      trim: true,
+      default: null
+    },
     isDeleted: {
       type: Boolean,
       default: false

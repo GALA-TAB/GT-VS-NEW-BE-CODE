@@ -2075,7 +2075,7 @@ const likeServiceListing = catchAsync(async (req, res, next) => {
 
 const VerifyServiceListing = catchAsync(async (req, res, next) => {
   const { id } = req.params;
-  const { VerificationStatus } = req.body;
+  const { VerificationStatus, note } = req.body;
   if (!VerificationStatus) {
     return next(
       new AppError('VerificationStatus is required', 400, {
@@ -2083,19 +2083,191 @@ const VerifyServiceListing = catchAsync(async (req, res, next) => {
       })
     );
   }
-  const serviceListing = await ServiceListing.findByIdAndUpdate(
-    id,
-    { VerificationStatus },
-    { new: true }
-  );
-  if (!serviceListing) {
+
+  // Fetch current listing to capture previous status
+  const existingListing = await ServiceListing.findById(id);
+  if (!existingListing) {
     return next(new AppError('No service listing found with that ID', 404));
   }
+  const previousStatus = existingListing.VerificationStatus;
+
+  const updateFields = { VerificationStatus };
+  // Record verification metadata when verifying
+  if (VerificationStatus === 'verified') {
+    updateFields.verifiedAt = new Date();
+    updateFields.verifiedByAdminId = req.user._id;
+    updateFields.verifiedByAdminName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+  }
+
+  const serviceListing = await ServiceListing.findByIdAndUpdate(
+    id,
+    updateFields,
+    { new: true }
+  );
+
+  // Write verification log entry
+  const VerificationLog = require('../models/VerificationLog');
+  try {
+    await VerificationLog.create({
+      serviceListingId: serviceListing._id,
+      serviceTitle: serviceListing.title || serviceListing.generatedTitle || null,
+      previousStatus,
+      newStatus: VerificationStatus,
+      changedByAdminId: req.user._id,
+      changedByAdminName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+      note: note || null
+    });
+  } catch (logErr) {
+    console.error('[VerifyServiceListing] Failed to write verification log:', logErr.message);
+  }
+
   res.locals.dataId = serviceListing._id;
   res.status(200).json({
     status: 'success',
     data: serviceListing,
     message: 'Service listing updated successfully'
+  });
+});
+
+/**
+ * GET /servicelisting/by-status
+ * Returns listings filtered by VerificationStatus with appropriate sorting.
+ * Query: ?status=verified|pending|notVerified&page=1&limit=10&keyword=
+ */
+const getServiceListingsByStatus = catchAsync(async (req, res) => {
+  const {
+    status: verificationStatus = 'verified',
+    page = 1,
+    limit = 10,
+    keyword
+  } = req.query;
+
+  const pageNum = parseInt(page, 10);
+  const limitNum = parseInt(limit, 10);
+
+  const matchStage = {
+    VerificationStatus: verificationStatus,
+    isDeleted: { $ne: true }
+  };
+
+  if (keyword) {
+    matchStage.$or = [
+      { title: { $regex: keyword, $options: 'i' } },
+      { generatedTitle: { $regex: keyword, $options: 'i' } }
+    ];
+  }
+
+  // Sorting: verified → newest verified first, pending → oldest first, notVerified → newest first
+  let sortStage;
+  if (verificationStatus === 'pending') {
+    sortStage = { createdAt: 1 }; // oldest first
+  } else if (verificationStatus === 'verified') {
+    sortStage = { verifiedAt: -1, updatedAt: -1 }; // newest verified first
+  } else {
+    sortStage = { createdAt: -1 }; // newest first
+  }
+
+  const pipeline = [
+    { $match: matchStage },
+    {
+      $lookup: {
+        from: 'users',
+        localField: 'vendorId',
+        foreignField: '_id',
+        as: 'vendorData'
+      }
+    },
+    { $unwind: { path: '$vendorData', preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: 'servicecategories',
+        localField: 'serviceTypeId',
+        foreignField: '_id',
+        as: 'serviceTypeData'
+      }
+    },
+    { $unwind: { path: '$serviceTypeData', preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        _id: 1,
+        title: 1,
+        generatedTitle: 1,
+        description: 1,
+        VerificationStatus: 1,
+        verifiedAt: 1,
+        verifiedByAdminId: 1,
+        verifiedByAdminName: 1,
+        status: 1,
+        completed: 1,
+        media: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        'vendorData._id': 1,
+        'vendorData.firstName': 1,
+        'vendorData.lastName': 1,
+        'vendorData.email': 1,
+        'vendorData.companyName': 1,
+        'vendorData.profilePicture': 1,
+        'serviceTypeData._id': 1,
+        'serviceTypeData.name': 1
+      }
+    },
+    { $sort: sortStage }
+  ];
+
+  const countPipeline = [{ $match: matchStage }, { $count: 'totalCount' }];
+  const [listings, countResult] = await Promise.all([
+    ServiceListing.aggregate(pipeline)
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum),
+    ServiceListing.aggregate(countPipeline)
+  ]);
+
+  const totalCount = countResult[0]?.totalCount || 0;
+
+  return res.status(200).json({
+    status: 'success',
+    results: listings.length,
+    totalCount,
+    totalPages: Math.ceil(totalCount / limitNum),
+    currentPage: pageNum,
+    data: listings
+  });
+});
+
+/**
+ * GET /servicelisting/verification-logs
+ * Returns verification change logs with optional filters.
+ * Query: ?serviceListingId=&page=1&limit=20
+ */
+const getVerificationLogs = catchAsync(async (req, res) => {
+  const { serviceListingId, page = 1, limit = 20 } = req.query;
+  const pageNum = parseInt(page, 10);
+  const limitNum = parseInt(limit, 10);
+
+  const VerificationLog = require('../models/VerificationLog');
+
+  const filter = {};
+  if (serviceListingId) {
+    filter.serviceListingId = new mongoose.Types.ObjectId(serviceListingId);
+  }
+
+  const [logs, totalCount] = await Promise.all([
+    VerificationLog.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum)
+      .lean(),
+    VerificationLog.countDocuments(filter)
+  ]);
+
+  return res.status(200).json({
+    status: 'success',
+    results: logs.length,
+    totalCount,
+    totalPages: Math.ceil(totalCount / limitNum),
+    currentPage: pageNum,
+    data: logs
   });
 });
 
@@ -2114,5 +2286,7 @@ module.exports = {
   getServiceListingTitle,
   getoverallServiceListings,
   getAllService,
-  VerifyServiceListing
+  VerifyServiceListing,
+  getServiceListingsByStatus,
+  getVerificationLogs
 };
