@@ -7,7 +7,12 @@ require('dotenv').config();
 const handleCastErrorDB = (err) => {
   const message = `Invalid ${err.path}: ${err.value}.`;
   console.log('Cast Error', message);
-  return [message, 400];
+  return new AppError(message, 400, { [err.path]: message });
+};
+
+// Handle BSON errors (Mongoose 7+ throws BSONError for invalid ObjectId)
+const handleBSONError = (err) => {
+  return new AppError('Invalid ID format', 400, { id: err.message });
 };
 
 // Error handling functions for MongoDB and other specific cases
@@ -61,6 +66,7 @@ module.exports = (err, req, res,next) => {
 
   // Customize MongoDB or JWT errors
   if (err.name === 'CastError') error = handleCastErrorDB(err);
+  if (err.name === 'BSONError' || err.name === 'BSONTypeError') error = handleBSONError(err);
   if (err.code === 11000) error = handleDuplicateFieldsDB(err); // Duplicate key error
   if (err.name === 'ValidationError') error = handleValidationErrorDB(err);
   if (err.name === 'JsonWebTokenError') error = handleJWTError();

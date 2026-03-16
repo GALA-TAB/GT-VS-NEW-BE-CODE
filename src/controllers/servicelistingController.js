@@ -1838,8 +1838,8 @@ const deleteServicemedia = catchAsync(async (req, res, next) => {
 const getServiceListing = catchAsync(async (req, res, next) => {
   const { id } = req.params;
 
-  if (!id) {
-    return next(new AppError('Please provide service listing id', 400));
+  if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+    return next(new AppError('Please provide a valid service listing id', 400));
   }
 
   const serviceListing = await ServiceListing.aggregate([
@@ -2263,6 +2263,9 @@ const getVerificationLogs = catchAsync(async (req, res) => {
 
   const filter = {};
   if (serviceListingId) {
+    if (!mongoose.Types.ObjectId.isValid(serviceListingId)) {
+      return res.status(400).json({ status: 'fail', message: 'Invalid serviceListingId format' });
+    }
     filter.serviceListingId = new mongoose.Types.ObjectId(serviceListingId);
   }
 
