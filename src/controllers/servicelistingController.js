@@ -78,6 +78,7 @@ const getfilterquery = (params) => {
     serviceTypeIds,
     isDeleted = false,
     eventTypeId,
+    eventTypeName,
     status,
     dateFilter,
     minPrice,
@@ -240,6 +241,10 @@ const getfilterquery = (params) => {
         $eq: new mongoose.Types.ObjectId(eventTypeId)
       }
     };
+  }
+
+  if (eventTypeName) {
+    matchStage['eventTypeData.name'] = { $regex: new RegExp(eventTypeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') };
   }
 
   // Geospatial filter
