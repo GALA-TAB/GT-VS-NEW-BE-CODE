@@ -69,6 +69,19 @@ const getAllTaxForum = catchAsync(async (req, res, next) => {
 
   // Build $match for search
   let matchStage = {};
+
+  // Date range filter
+  const { startDate, endDate } = req.query;
+  if (startDate || endDate) {
+    matchStage.createdAt = {};
+    if (startDate) matchStage.createdAt.$gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      matchStage.createdAt.$lte = end;
+    }
+  }
+
   if (search) {
     matchStage.$or = [
       { businessName: { $regex: search, $options: 'i' } },

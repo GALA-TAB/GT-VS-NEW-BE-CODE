@@ -1041,6 +1041,18 @@ const getAllUsersforAdmin = catchAsync(async (req, res) => {
   if (role && role !== 'all') query.role = role;
   if (status) query.status = status;
 
+  // Date range filter
+  const { startDate, endDate } = req.query;
+  if (startDate || endDate) {
+    query.createdAt = {};
+    if (startDate) query.createdAt.$gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      query.createdAt.$lte = end;
+    }
+  }
+
   // build search ORs
   const searchQuery = [];
   const trimmedSearch = (search || '').trim();

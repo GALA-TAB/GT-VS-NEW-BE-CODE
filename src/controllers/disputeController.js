@@ -171,6 +171,18 @@ const getAllDisputeForAdmin = catchAsync(async (req, res) => {
         baseMatch.disputeRole = userRole;
     }
 
+    // Date range filter
+    const { startDate, endDate } = req.query;
+    if (startDate || endDate) {
+        baseMatch.createdAt = {};
+        if (startDate) baseMatch.createdAt.$gte = new Date(startDate);
+        if (endDate) {
+            const end = new Date(endDate);
+            end.setHours(23, 59, 59, 999);
+            baseMatch.createdAt.$lte = end;
+        }
+    }
+
     const pipeline = [
         { $match: baseMatch },
         {

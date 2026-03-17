@@ -52,6 +52,18 @@ const getAllSuspensions = catchAsync(async (req, res, next) => {
   if (userRole) {
     query.userRole = userRole;
   }
+
+  // Date range filter
+  const { startDate, endDate } = req.query;
+  if (startDate || endDate) {
+    query.suspendedAt = {};
+    if (startDate) query.suspendedAt.$gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      query.suspendedAt.$lte = end;
+    }
+  }
   
   const skip = (page - 1) * limit;
   
