@@ -433,15 +433,12 @@ module.exports = {
   fetchUserChats: async (params) => {
     try {
       console.log(`fetchUserChats util called with params ${JSON.stringify(params)}`);
-      const { userId, pageNo = 1, recordsPerPage = 10, others = false, chatType, search } = params;
-      console.log('others', others);
+      const { userId, pageNo = 1, recordsPerPage = 10, chatType, search } = params;
       console.log('userId', userId);
-      let a = JSON.parse(others || false) ? false : true;
-      console.log('a', a);
       const skipDocuments = (pageNo - 1) * recordsPerPage;
       const documentsLimit = recordsPerPage;
       const userChatIds = await Chats.find({
-        // ...(chatType ? { chatType } : {}),
+        ...(chatType ? { chatType } : {}),
         participants: new ObjectId(userId),
         $or: [
           { userSettings: { $size: 0 } },
@@ -582,7 +579,7 @@ module.exports = {
     } catch (error) {
       console.log('error', error);
       console.log(`Got error in fetchUserChats for user ${params?.userId}: ${error.message}`);
-      return [];
+      return { pageNo: params?.pageNo || 1, recordsPerPage: params?.recordsPerPage || 10, totalRecords: 0, chats: [] };
     }
   },
 

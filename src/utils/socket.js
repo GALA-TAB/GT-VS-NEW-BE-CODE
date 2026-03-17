@@ -167,7 +167,7 @@ function initializeSocket(server) {
     socket.on('get-user-active-status', async (data) => {
       try {
         const { userToCheckId } = data;
-        const isUserOnline = io.sockets.adapter.rooms.get(userToCheckData?.toString?.())
+        const isUserOnline = io.sockets.adapter.rooms.get(userToCheckId?.toString?.())
           ? true
           : false;
         if (isUserOnline) {

@@ -6,7 +6,7 @@ const userSettingsSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   hasUserDeletedChat: { type: Boolean, default: false },
   lastChatDeletedAt: { type: Date, default: new Date(0) },
-  isDeletedFrom2Reple: { type: Boolean, default: false },
+  isDeletedFrom2Reply: { type: Boolean, default: false },
 });
 
 const chatSchema = new Schema(
