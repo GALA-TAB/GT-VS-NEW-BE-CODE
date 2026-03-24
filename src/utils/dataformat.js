@@ -375,14 +375,12 @@ const servicelistingFormat = [
           $cond: [
             {
               $and: [
-                { $eq: ['$vendorId.emailVerified', true] }, 
-                { $eq: ['$vendorId.contactVerified', true] },
                 { $eq: ['$kycDocument.status', 'approved'] },
                 { $eq: ['$vendorId.textForumStatus', 'approved'] },
                 { $eq: ['$businessCertificate.status', 'approved'] }
               ]
             },
-            'approved', // ✅ all checks passed
+            'approved', // ✅ all 3 docs approved
             null // ❌ otherwise
           ]
         }
