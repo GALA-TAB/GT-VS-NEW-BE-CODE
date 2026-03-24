@@ -8,7 +8,8 @@ const {
   updateKycStatus,
   directUploadKyc,
   getVendorVerificationStatus,
-  getVendorAllDocuments
+  getVendorAllDocuments,
+  getPendingDocumentRequests
 } = require('../controllers/KYCController');
 const requireAuth = require('../middlewares/requireAuth');
 const { VerficationComplete } = require('../utils/veriff');
@@ -44,6 +45,7 @@ router.get('/kyc/pending', requireAuth, restrictTo(["admin"]), getallPendingKYC)
 // route to approve or reject KYC DOCs
 router.post('/kyc/review', requireAuth, restrictTo(["admin"]), approveRejectDocs);
 router.get('/verification-status', requireAuth, restrictTo(["vendor"]), getVendorVerificationStatus);
+router.get('/pending-document-requests', requireAuth, restrictTo(["admin"]), getPendingDocumentRequests);
 router.get('/vendor-documents/:vendorId', requireAuth, restrictTo(["admin"]), getVendorAllDocuments);
 router.get('/',  getallvendor);
 

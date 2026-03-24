@@ -473,6 +473,78 @@ const getVendorAllDocuments = catchAsync(async (req, res, next) => {
   });
 });
 
+// Admin endpoint: get all vendors with any pending document (for New Requests tab)
+const getPendingDocumentRequests = catchAsync(async (req, res, next) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const search = req.query.search || '';
+
+  // Find all pending documents across 3 collections
+  const [pendingKyc, pendingBizCert, pendingTax] = await Promise.all([
+    KYCDocument.find({ status: 'pending' })
+      .populate('userId', 'firstName lastName email contact profilePicture')
+      .select('userId status uploadedAt')
+      .lean(),
+    BusinessCertificate.find({ status: 'pending', isDeleted: false })
+      .populate('vendorId', 'firstName lastName email contact profilePicture')
+      .select('vendorId status createdAt')
+      .lean(),
+    TaxForum.find({ status: 'pending', isDeleted: false })
+      .populate('vendorId', 'firstName lastName email contact profilePicture')
+      .select('vendorId status createdAt')
+      .lean()
+  ]);
+
+  // Build a map: vendorId -> { vendor, pendingDocs[], earliestDate }
+  const vendorMap = {};
+
+  const addToMap = (docs, docType, vendorField, dateField) => {
+    for (const doc of docs) {
+      const vendor = doc[vendorField];
+      if (!vendor) continue;
+      const vid = vendor._id.toString();
+      if (!vendorMap[vid]) {
+        vendorMap[vid] = { vendor, pendingDocs: [], earliestDate: null };
+      }
+      vendorMap[vid].pendingDocs.push(docType);
+      const docDate = doc[dateField] || doc.createdAt;
+      if (!vendorMap[vid].earliestDate || docDate < vendorMap[vid].earliestDate) {
+        vendorMap[vid].earliestDate = docDate;
+      }
+    }
+  };
+
+  addToMap(pendingKyc, 'Identification', 'userId', 'uploadedAt');
+  addToMap(pendingBizCert, 'Business Certificate', 'vendorId', 'createdAt');
+  addToMap(pendingTax, 'EIN Confirmation', 'vendorId', 'createdAt');
+
+  // Convert to array and sort oldest first
+  let results = Object.values(vendorMap).sort(
+    (a, b) => new Date(a.earliestDate) - new Date(b.earliestDate)
+  );
+
+  // Apply search filter
+  if (search) {
+    const s = search.toLowerCase();
+    results = results.filter((r) => {
+      const name = `${r.vendor.firstName || ''} ${r.vendor.lastName || ''}`.toLowerCase();
+      const email = (r.vendor.email || '').toLowerCase();
+      return name.includes(s) || email.includes(s);
+    });
+  }
+
+  const total = results.length;
+  const paginated = results.slice((page - 1) * limit, page * limit);
+
+  return res.status(200).json({
+    status: 'success',
+    data: paginated,
+    total,
+    page,
+    limit
+  });
+});
+
 module.exports = {
   initiateKyc,
   uploadKyc,
@@ -483,7 +555,8 @@ module.exports = {
   directUploadKyc,
   getVendorVerificationStatus,
   getVendorAllDocuments,
-  checkAndAutoVerifyVendor
+  checkAndAutoVerifyVendor,
+  getPendingDocumentRequests
 };
 
 
