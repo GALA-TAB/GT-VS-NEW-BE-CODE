@@ -149,7 +149,7 @@ const registerUser = catchAsync(async (req, res, next) => {
     newUser = new Customers(UserData);
     await newUser.save({ validateBeforeSave: false });
   } else if (UserData?.role === roles.VENDOR) {
-    UserData.status = 'Pending';
+    UserData.status = 'Active';
     newUser = new Vendors(UserData);
     await newUser.save({ validateBeforeSave: false });
   } else if (UserData?.role === roles.ADMIN) {
