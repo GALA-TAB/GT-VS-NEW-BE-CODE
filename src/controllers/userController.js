@@ -11,6 +11,7 @@ const createLog = require('../utils/createLog');
 const phoneUtil = PhoneNumberUtil.getInstance();
 const { roles } = require('../utils/types');
 const Vendor = require('../models/users/Vendor');
+const Customer = require('../models/users/Customer');
 const joiError = require('../utils/joiError');
 const ServiceListing = require('../models/ServiceListing');
 const { vendorResponseTimeQuery } = require('../utils/dataformat');
@@ -336,6 +337,98 @@ const CreateVendorByAdmin = catchAsync(async (req, res, next) => {
     return res.status(200).json({
       status: 'success',
       message: 'Vendor created successfully',
+      data: user
+    });
+  } catch (err) {
+    console.log(err);
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+    await user.save({ validateBeforeSave: false });
+    return next(new AppError('There was an error sending the email. Try again later!'), 500);
+  }
+});
+
+const CreateCustomerByAdmin = catchAsync(async (req, res, next) => {
+  const {
+    officeContact,
+    officeCountryCode,
+    emergencyContact,
+    emergencyCountryCode,
+    ...updateData
+  } = req.body;
+
+  const { error } = validateUserProfile(req.body);
+  if (error) {
+    const formattedErrors = joiError(error);
+    return next(new AppError('Validation failed', 400, formattedErrors));
+  }
+
+  const { email, contact, countryCode } = req.body;
+
+  let normalizedContact;
+  let regionCode;
+
+  try {
+    const countryDialCode = parseInt(countryCode.replace('+', ''), 10);
+    regionCode = phoneUtil.getRegionCodeForCountryCode(countryDialCode);
+    if (!regionCode) throw new Error('Invalid country code.');
+
+    const number = phoneUtil.parseAndKeepRawInput(contact, regionCode);
+    if (!phoneUtil.isValidNumber(number) || !phoneUtil.isValidNumberForRegion(number, regionCode)) {
+      throw new Error('Invalid phone number for the specified country.');
+    }
+    normalizedContact = phoneUtil.format(number, PhoneNumberFormat.E164);
+  } catch (err) {
+    return next(new AppError('Validation failed', 400, { contact: err.message }));
+  }
+
+  const existingUsers = await User.findOne({
+    $or: [{ email }, { contact: normalizedContact }]
+  });
+  if (existingUsers) {
+    if (existingUsers.email === email) {
+      return next(new AppError('Email already exists!', 400, { email: 'Email already exists!' }));
+    }
+    if (existingUsers.contact === normalizedContact) {
+      return next(
+        new AppError('Contact already exists!', 400, { contact: 'Contact already exists!' })
+      );
+    }
+  }
+
+  const UserData = {
+    ...updateData,
+    email,
+    contact: normalizedContact,
+    countryCode,
+    role: roles.CUSTOMER
+  };
+
+  const user = await Customer.create(UserData);
+  const resetToken = user.createPasswordResetToken();
+  const origin = req.get('origin') || process.env.FRONTEND_URL;
+  const resetURL = `${origin}/auth/reset-password?token=${resetToken}`;
+  try {
+    const response = await sendEmailforVendor('forgotEmail', 'Reset Your Password', email, {
+      firstName: user.firstName,
+      resetURL
+    });
+    res.locals.dataId = user._id;
+    user.save({ validateBeforeSave: false });
+
+    createLog({
+      actorId: req.user._id,
+      actorModel: 'admin',
+      action: 'CREATE_CUSTOMER',
+      description: `Admin created customer account: ${user.email}`,
+      target: 'User',
+      targetId: user._id,
+      ipAddress: req.ip || req.headers['x-forwarded-for'],
+    });
+
+    return res.status(200).json({
+      status: 'success',
+      message: 'Customer created successfully',
       data: user
     });
   } catch (err) {
@@ -1442,6 +1535,7 @@ module.exports = {
   sendMailToUsers,
   getVendorforService,
   CreateVendorByAdmin,
+  CreateCustomerByAdmin,
   addLastViewedService,
   UpdateUserByAdmin,
   is2FAEnabled

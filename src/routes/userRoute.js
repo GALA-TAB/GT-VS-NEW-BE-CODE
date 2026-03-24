@@ -1,6 +1,6 @@
 const express = require('express');
 const requireAuth = require('../middlewares/requireAuth');
-const { updateMe, getMe, deleteMe, getAllUsers,getAllUsersforAdmin ,updatestaus,sendMailToUsers,getVendorforService,CreateVendorByAdmin,getUser,addLastViewedService,UpdateUserByAdmin,is2FAEnabled, getAllCustomerandVendor} = require('../controllers/userController');
+const { updateMe, getMe, deleteMe, getAllUsers,getAllUsersforAdmin ,updatestaus,sendMailToUsers,getVendorforService,CreateVendorByAdmin,CreateCustomerByAdmin,getUser,addLastViewedService,UpdateUserByAdmin,is2FAEnabled, getAllCustomerandVendor} = require('../controllers/userController');
 
 const restrictTo = require('../middlewares/restrictTo');
 const { roles } = require('../utils/types');
@@ -21,6 +21,7 @@ router.use(restrictTo([roles.ADMIN]));
 router.route('/').get(getAllUsers)
 router.route("/updatestatus/:id").patch(logActionMiddleware('Update Status', 'User'),updatestaus);
 router.route('/CreateVendor').post(logActionMiddleware('Create vendor', 'User'),CreateVendorByAdmin);
+router.route('/CreateCustomer').post(logActionMiddleware('Create customer', 'User'),CreateCustomerByAdmin);
 router.route("/sendmessage").post(sendMailToUsers)
 router.route('/AccountUsers').get(restrictTo([roles.ADMIN]),getAllUsersforAdmin);
 router.get('/getUser/:id', restrictTo([roles.ADMIN]),getUser);
