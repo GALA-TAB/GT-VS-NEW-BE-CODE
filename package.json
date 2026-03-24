@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.775.0",
+    "@aws-sdk/client-sns": "^3.1015.0",
     "@aws-sdk/s3-request-presigner": "^3.772.0",
     "axios": "^1.8.3",
     "bcryptjs": "^3.0.2",

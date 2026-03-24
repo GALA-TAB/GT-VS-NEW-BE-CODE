@@ -1,37 +1,39 @@
 const twilio = require('twilio');
 require('dotenv').config();
 const AppError = require('./appError');
+const { sendAwsSns } = require('./sendAwsSns');
 
 const sendTwilioSms = async (to, text) => {
   try {
-    if (
-      !process.env.TWILLIO_ACCOUNT_ID ||
-      !process.env.TWILLIO_AUTH_TOKEN ||
-      !process.env.TWILLIO_PHONE_NUMBER
-    ) {
-      throw new AppError('Missing Twilio environment variables.', 500);
+    // Try AWS SNS first
+    const snsResponse = await sendAwsSns(to, text);
+    if (snsResponse) {
+      console.log('SMS sent via AWS SNS');
+      return snsResponse;
     }
 
-    // if (!to || !text) {
-    //   throw new AppError('Recipient phone number and message text are required.', 400);
-    // }
+    // Fallback: try Twilio SMS
+    if (
+      process.env.TWILLIO_ACCOUNT_ID &&
+      process.env.TWILLIO_AUTH_TOKEN &&
+      process.env.TWILLIO_PHONE_NUMBER
+    ) {
+      const client = twilio(process.env.TWILLIO_ACCOUNT_ID, process.env.TWILLIO_AUTH_TOKEN);
+      const smsResponse = await client.messages.create({
+        body: text,
+        from: process.env.TWILLIO_PHONE_NUMBER,
+        to
+      });
+      console.log('SMS sent via Twilio');
+      return smsResponse;
+    }
 
-    // const client = twilio(process.env.TWILLIO_ACCOUNT_ID, process.env.TWILLIO_AUTH_TOKEN);
-
-    // const smsResponse = await client.messages.create({
-    //   body: text,
-    //   from: process.env.TWILLIO_PHONE_NUMBER,
-    //   to
-    // });
-
-    // return smsResponse;
-    return { message : "messaged service has been manually stoped"}
+    console.error('No SMS provider available (AWS SNS and Twilio both failed)');
+    return null;
   } catch (error) {
-    
     const errorMessage = error.message || 'An unknown error occurred while sending SMS.';
-    console.error('Twilio SMS Error:', errorMessage);
-    return null; // or throw an error if you want to handle it upstream
-    // throw new AppError(`Failed to send SMS: ${errorMessage}`, error.statusCode || 500);
+    console.error('SMS Error:', errorMessage);
+    return null;
   }
 };
 
