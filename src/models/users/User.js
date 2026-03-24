@@ -93,6 +93,7 @@ const userSchema = new Schema(
       trim: true,
       validate: {
         validator(value) {
+          if (!value) return true;
           return /^\+\d{1,4}$/.test(value);
         },
         message: 'Invalid country code'
@@ -104,6 +105,7 @@ const userSchema = new Schema(
       trim: true,
       validate: {
         validator(value) {
+          if (!value) return true;
           return /^\+\d{1,4}$/.test(value);
         },
         message: 'Invalid office country code'
@@ -115,6 +117,7 @@ const userSchema = new Schema(
       trim: true,
       validate: {
         validator(value) {
+          if (!value) return true;
           return /^\+\d{1,4}$/.test(value);
         },
         message: 'Invalid emergency country code'
