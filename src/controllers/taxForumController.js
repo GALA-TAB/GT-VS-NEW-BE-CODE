@@ -33,7 +33,7 @@ const createTaxForum = catchAsync(async (req, res, next) => {
     taxId,
     deliveryForm,
     taxDocument,
-    status: 'inprogress'
+    status: 'pending'
   };
 
   const taxForum = await TaxForum.findOneAndUpdate({ vendorId: vendor._id }, taxForumData, {
