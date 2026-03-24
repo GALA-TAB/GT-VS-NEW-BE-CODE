@@ -303,13 +303,67 @@ const updateKycStatus = catchAsync(async (req, res, next) => {
 
 });
 
+const directUploadKyc = catchAsync(async (req, res, next) => {
+  const { frontImage, backImage } = req.body;
+  const userId = req.user._id;
+
+  if (!frontImage) {
+    return next(new AppError('Front image is required', 400, { frontImage: 'Front image is required' }));
+  }
+  if (!backImage) {
+    return next(new AppError('Back image is required', 400, { backImage: 'Back image is required' }));
+  }
+
+  // Check if vendor already has a KYC document - archive old one
+  const existing = await KYCDocument.findOne({ userId });
+
+  if (existing) {
+    existing.archivedDocuments.push({
+      frontImageUrl: existing.frontImageUrl,
+      backImageUrl: existing.backImageUrl,
+      selfieImageUrl: existing.selfieImageUrl,
+      documentType: existing.documentType,
+      status: existing.status,
+      archivedAt: new Date()
+    });
+    existing.frontImageUrl = frontImage;
+    existing.backImageUrl = backImage;
+    existing.documentType = 'national_id';
+    existing.status = 'pending';
+    await existing.save();
+
+    res.locals.dataId = existing._id;
+    return res.status(200).json({
+      status: 'success',
+      data: existing,
+      message: 'Identification resubmitted successfully. Previous documents have been archived.'
+    });
+  }
+
+  const kyc = await KYCDocument.create({
+    userId,
+    documentType: 'national_id',
+    frontImageUrl: frontImage,
+    backImageUrl: backImage,
+    status: 'pending'
+  });
+
+  res.locals.dataId = kyc._id;
+  return res.status(200).json({
+    status: 'success',
+    data: kyc,
+    message: 'Identification submitted successfully'
+  });
+});
+
 module.exports = {
   initiateKyc,
   uploadKyc,
   getallPendingKYC,
   approveRejectDocs,
   getallvendor,
-  updateKycStatus
+  updateKycStatus,
+  directUploadKyc
 };
 
 

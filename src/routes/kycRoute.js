@@ -5,7 +5,8 @@ const {
   getallPendingKYC,
   approveRejectDocs,
   getallvendor,
-  updateKycStatus
+  updateKycStatus,
+  directUploadKyc
 } = require('../controllers/KYCController');
 const requireAuth = require('../middlewares/requireAuth');
 const { VerficationComplete } = require('../utils/veriff');
@@ -29,6 +30,10 @@ router.patch('/update-kyc-status/:documentId', requireAuth, restrictTo(["admin"]
 
 // uploads the docs+selfie urls to DB
 router.post('/upload-kyc', requireAuth, logActionMiddleware('Upload kyc', 'KYCDocument'), uploadKyc);
+
+// direct upload front/back photos without QR session
+router.post('/direct-upload', requireAuth, logActionMiddleware('Direct upload kyc', 'KYCDocument'), directUploadKyc);
+
 router.post('/verfication', VerficationComplete);
 
 // for admin, get all pending KYC docs

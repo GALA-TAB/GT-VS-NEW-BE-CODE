@@ -2,7 +2,7 @@ const { Schema, model } = require('mongoose');
 
 const KYCDocumentSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-  sessionToken: { type: String, required: true },
+  sessionToken: { type: String },
   documentType: {
     type: String,
     enum: ['national_id', 'passport', 'driver_license'],
@@ -10,7 +10,7 @@ const KYCDocumentSchema = new Schema({
   },
   frontImageUrl: { type: String, required: true },
   backImageUrl: { type: String, required: true },
-  selfieImageUrl: { type: String, required: true },
+  selfieImageUrl: { type: String },
   status: {
     type: String,
     enum: ['pending', "inprogress", 'abandoned', 'expired', "resubmission_requested", "approved"],
