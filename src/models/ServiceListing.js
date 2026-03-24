@@ -228,7 +228,7 @@ const ServiceListingSchema = new mongoose.Schema(
       type: String,
       trim: true,
       enum: ['verified', 'notVerified', 'pending'],
-      default: 'pending'
+      default: 'verified'
     },
     verifiedAt: {
       type: Date,

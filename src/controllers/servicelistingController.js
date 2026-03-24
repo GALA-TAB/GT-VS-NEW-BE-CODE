@@ -821,7 +821,7 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
   const { title, description, media } = req.body;
 
   if (title || description || media) {
-    updatedFields.VerificationStatus = 'pending';
+    updatedFields.VerificationStatus = 'verified';
   }
   console.log('[updateServiceListing] updatedFields.customAmenities:', JSON.stringify(updatedFields.customAmenities));
 
@@ -858,11 +858,11 @@ const updateServiceListing = catchAsync(async (req, res, next) => {
         // The pre-hook allows this because the doc has no title yet.
         await ServiceListing.updateOne(
           { _id: serviceListing._id },
-          { $set: { title: genTitle, generatedTitle: genTitle, VerificationStatus: 'pending' } }
+          { $set: { title: genTitle, generatedTitle: genTitle, VerificationStatus: 'verified' } }
         );
         serviceListing.title = genTitle;
         serviceListing.generatedTitle = genTitle;
-        serviceListing.VerificationStatus = 'pending';
+        serviceListing.VerificationStatus = 'verified';
       }
     } catch (e) {
       console.error('Auto title generation failed:', e.message);
@@ -1111,11 +1111,11 @@ const updateServiceDetail = catchAsync(async (req, res, next) => {
       if (genTitle) {
         await ServiceListing.updateOne(
           { _id: serviceListing._id },
-          { $set: { title: genTitle, generatedTitle: genTitle, VerificationStatus: 'pending' } }
+          { $set: { title: genTitle, generatedTitle: genTitle, VerificationStatus: 'verified' } }
         );
         serviceListing.title = genTitle;
         serviceListing.generatedTitle = genTitle;
-        serviceListing.VerificationStatus = 'pending';
+        serviceListing.VerificationStatus = 'verified';
       }
     } catch (e) {
       console.error('Auto title generation failed:', e.message);
