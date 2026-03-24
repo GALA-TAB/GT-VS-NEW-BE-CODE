@@ -200,8 +200,11 @@ const getallvendor = catchAsync(async (req, res) => {
     }
   ];
 
+  const sortOrder = req.query.sortOrder === 'desc' ? -1 : 1;
+
   const vendorKYCDocuments = await KYCDocument.aggregate([
     ...basePipeline,
+    { $sort: { uploadedAt: sortOrder } },
     { $skip: skip },
     { $limit: limit }
   ]);
@@ -318,7 +321,7 @@ const updateKycStatus = catchAsync(async (req, res, next) => {
 });
 
 const directUploadKyc = catchAsync(async (req, res, next) => {
-  const { frontImage, backImage } = req.body;
+  const { frontImage, backImage, selfieImage } = req.body;
   const userId = req.user._id;
 
   if (!frontImage) {
@@ -326,6 +329,9 @@ const directUploadKyc = catchAsync(async (req, res, next) => {
   }
   if (!backImage) {
     return next(new AppError('Back image is required', 400, { backImage: 'Back image is required' }));
+  }
+  if (!selfieImage) {
+    return next(new AppError('Selfie image is required', 400, { selfieImage: 'Selfie image is required' }));
   }
 
   // Check if vendor already has a KYC document - archive old one
@@ -342,6 +348,7 @@ const directUploadKyc = catchAsync(async (req, res, next) => {
     });
     existing.frontImageUrl = frontImage;
     existing.backImageUrl = backImage;
+    existing.selfieImageUrl = selfieImage;
     existing.documentType = 'national_id';
     existing.status = 'pending';
     await existing.save();
@@ -359,6 +366,7 @@ const directUploadKyc = catchAsync(async (req, res, next) => {
     documentType: 'national_id',
     frontImageUrl: frontImage,
     backImageUrl: backImage,
+    selfieImageUrl: selfieImage,
     status: 'pending'
   });
 
@@ -370,6 +378,42 @@ const directUploadKyc = catchAsync(async (req, res, next) => {
   });
 });
 
+const getVendorVerificationStatus = catchAsync(async (req, res, next) => {
+  const userId = req.user._id;
+
+  const [kycDoc, businessCert, taxForum] = await Promise.all([
+    KYCDocument.findOne({ userId }).select('status frontImageUrl backImageUrl selfieImageUrl rejectionReason uploadedAt'),
+    require('../models/BusinessCertificate').findOne({ vendorId: userId, isDeleted: false }).select('status documentUrl rejectionNote createdAt'),
+    require('../models/TaxForum').findOne({ vendorId: userId }).select('status taxDocument rejectionNote createdAt')
+  ]);
+
+  return res.status(200).json({
+    status: 'success',
+    data: {
+      identification: kycDoc ? {
+        status: kycDoc.status,
+        frontImageUrl: kycDoc.frontImageUrl,
+        backImageUrl: kycDoc.backImageUrl,
+        selfieImageUrl: kycDoc.selfieImageUrl,
+        rejectionReason: kycDoc.rejectionReason,
+        uploadedAt: kycDoc.uploadedAt
+      } : null,
+      businessCertificate: businessCert ? {
+        status: businessCert.status,
+        documentUrl: businessCert.documentUrl,
+        rejectionNote: businessCert.rejectionNote,
+        createdAt: businessCert.createdAt
+      } : null,
+      einConfirmation: taxForum ? {
+        status: taxForum.status,
+        taxDocument: taxForum.taxDocument,
+        rejectionNote: taxForum.rejectionNote,
+        createdAt: taxForum.createdAt
+      } : null
+    }
+  });
+});
+
 module.exports = {
   initiateKyc,
   uploadKyc,
@@ -377,7 +421,8 @@ module.exports = {
   approveRejectDocs,
   getallvendor,
   updateKycStatus,
-  directUploadKyc
+  directUploadKyc,
+  getVendorVerificationStatus
 };
 
 
