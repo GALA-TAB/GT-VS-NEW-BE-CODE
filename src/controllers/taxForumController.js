@@ -218,13 +218,19 @@ const VerifyTaxForum = catchAsync(async (req, res, next) => {
   );
 
   console.log('Tax Forum Verification Status:', vendor?.textForumStatus);
-  //  sendNotification({
-  //     userId: taxForum.vendorId,
-  //     title: 'Tax Forum',
-  //     message: `Your tax forum has been ${status ? 'approved' : 'rejected'}`,
-  //     type: 'TaxForum',
 
-  // });
+  // Send notification + email to vendor
+  const vendorId = taxForum?.vendorId?._id || taxForum?.vendorId;
+  const notifTitle = status === 'approved' ? 'EIN Confirmation Letter Approved' : 'EIN Confirmation Letter Rejected';
+  const notifMessage = status === 'approved'
+    ? 'Your EIN Confirmation Letter has been approved by Gala Tab.'
+    : `Your EIN Confirmation Letter has been rejected by Gala Tab. Reason: ${taxForum.rejectionNote || 'No reason provided'}`;
+  await sendNotification({
+    userId: vendorId,
+    title: notifTitle,
+    message: notifMessage,
+    type: 'alert',
+  });
 
   res.status(200).json({
     status: 'success',

@@ -2,6 +2,7 @@ const catchAsync = require('../utils/catchAsync');
 const BusinessCertificate = require('../models/BusinessCertificate');
 const AppError = require('../utils/appError');
 const Vendor = require('../models/users/Vendor');
+const sendNotification = require('../utils/storeNotification');
 const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDeleteFilter');
 
 const createBusinessCertificate = catchAsync(async (req, res, next) => {
@@ -180,6 +181,20 @@ const verifyBusinessCertificate = catchAsync(async (req, res, next) => {
   );
 
   res.locals.dataId = businessCertificate._id;
+
+  // Send notification + email to vendor
+  const vendorId = businessCertificate.vendorId?._id || businessCertificate.vendorId;
+  const notifTitle = status === 'approved' ? 'Business Certificate Approved' : 'Business Certificate Rejected';
+  const notifMessage = status === 'approved'
+    ? 'Your Business Certificate has been approved by Gala Tab.'
+    : `Your Business Certificate has been rejected by Gala Tab. Reason: ${businessCertificate.rejectionNote || 'No reason provided'}`;
+  await sendNotification({
+    userId: vendorId,
+    title: notifTitle,
+    message: notifMessage,
+    type: 'alert',
+  });
+
   res.status(200).json({
     status: 'success',
     data: businessCertificate,

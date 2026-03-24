@@ -7,6 +7,7 @@ const AppError = require('../utils/appError');
 const { kycUploadSchema, approveRejectDocValidation } = require('../utils/joi/KYCValidation');
 const { uploadVeriff } = require('../utils/veriff');
 const Vendor = require('../models/users/Vendor');
+const sendNotification = require('../utils/storeNotification');
 
 const initiateKyc = catchAsync(async (req, res, next) => {
   try {
@@ -260,6 +261,19 @@ const approveRejectDocs = catchAsync(async (req, res, next) => {
         console.log("updatedVendor",updatedVendor);
 
     await kycDoc.save();
+
+    // Send notification + email to vendor
+    const notifTitle = status === 'approved' ? 'Identification Approved' : 'Identification Rejected';
+    const notifMessage = status === 'approved'
+      ? 'Your Identification document has been approved by Gala Tab.'
+      : `Your Identification document has been rejected by Gala Tab. Reason: ${kycDoc.rejectionReason}`;
+    await sendNotification({
+      userId: kycDoc.userId,
+      title: notifTitle,
+      message: notifMessage,
+      type: 'alert',
+    });
+
     return res.status(200).json({ success: true, message: `KYC ${status} successfully` });
   } catch (err) {
     return next(
