@@ -40,6 +40,12 @@ const updateMe = catchAsync(async (req, res, next) => {
     return next(new AppError('User not found', 404));
   }
 
+  // Normalize country field — if sent as populated object, extract _id
+  if (req.body.country && typeof req.body.country === 'object') {
+    req.body.country = req.body.country._id?.toString() || req.body.country.id?.toString() || '';
+    updateData.country = req.body.country;
+  }
+
   // Validate only the fields that are present in the request body
   const { error } = validateUserProfile(req.body, { partial: true });
   if (error) {
