@@ -300,10 +300,12 @@ const verifyotp = catchAsync(async (req, res, next) => {
   res.locals.dataId = userData._id;
   res.locals.actor = userData;
 
+  const isSignupVerification = !userData.is2FAEnabled;
+
   return res.status(200).json({
     status: 'success',
-    token: userData.role=="vendor"  && userData.is2FAEnabled===false? null: token,
-    redirecttologin: userData.role=="vendor"  && userData.is2FAEnabled===false ? true : false,
+    token: isSignupVerification ? null : token,
+    redirecttologin: isSignupVerification,
     data: userToSend
   });
 });
@@ -368,9 +370,13 @@ const verifyPhoneotp = catchAsync(async (req, res, next) => {
   const token = signToken(userToSend);
   res.locals.dataId = userData._id;
   res.locals.actor = userData;
+
+  const isSignupVerification = !userData.is2FAEnabled;
+
   return res.status(200).json({
     status: 'success',
-    token,
+    token: isSignupVerification ? null : token,
+    redirecttologin: isSignupVerification,
     data: userToSend
   });
 });
