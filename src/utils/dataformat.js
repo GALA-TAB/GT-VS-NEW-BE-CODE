@@ -42,6 +42,20 @@ const servicelistingFormat = [
   },
   {
     $lookup: {
+      from: 'businesscertificates',
+      localField: 'vendorId._id',
+      foreignField: 'vendorId',
+      as: 'businessCertificate'
+    }
+  },
+  {
+    $unwind: {
+      path: '$businessCertificate',
+      preserveNullAndEmptyArrays: true
+    }
+  },
+  {
+    $lookup: {
       from: 'servicecategories',
       localField: 'serviceTypeId',
       foreignField: '_id',
@@ -364,7 +378,8 @@ const servicelistingFormat = [
                 { $eq: ['$vendorId.emailVerified', true] }, 
                 { $eq: ['$vendorId.contactVerified', true] },
                 { $eq: ['$kycDocument.status', 'approved'] },
-                { $eq: ['$vendorId.textForumStatus', 'approved'] }
+                { $eq: ['$vendorId.textForumStatus', 'approved'] },
+                { $eq: ['$businessCertificate.status', 'approved'] }
               ]
             },
             'approved', // ✅ all checks passed

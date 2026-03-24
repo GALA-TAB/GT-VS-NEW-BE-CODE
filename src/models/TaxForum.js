@@ -42,7 +42,18 @@ const TaxSchema = new Schema(
         isDeleted: {
             type: Boolean,
             default: false // Soft delete
-        }
+        },
+        archivedDocuments: [
+            {
+                taxDocument: { type: String },
+                businessName: { type: String },
+                taxClassification: { type: String },
+                taxId: { type: String },
+                deliveryForm: { type: String },
+                status: { type: String },
+                archivedAt: { type: Date, default: Date.now }
+            }
+        ]
     },
     { timestamps: true }
 );

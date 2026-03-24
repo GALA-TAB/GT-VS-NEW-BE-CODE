@@ -21,6 +21,16 @@ const KYCDocumentSchema = new Schema({
     type: String,
     trim: true
   },
+  archivedDocuments: [
+    {
+      frontImageUrl: { type: String },
+      backImageUrl: { type: String },
+      selfieImageUrl: { type: String },
+      documentType: { type: String },
+      status: { type: String },
+      archivedAt: { type: Date, default: Date.now }
+    }
+  ],
   uploadedAt: { type: Date, default: Date.now }
 });
 

@@ -608,6 +608,16 @@ const getMe = catchAsync(async (req, res, next) => {
       }
     },
     { $unwind: { path: '$kyc', preserveNullAndEmptyArrays: true } },
+    // Business Certificate lookup
+    {
+      $lookup: {
+        from: 'businesscertificates',
+        localField: '_id',
+        foreignField: 'vendorId',
+        as: 'businessCertificate'
+      }
+    },
+    { $unwind: { path: '$businessCertificate', preserveNullAndEmptyArrays: true } },
     // Country lookup
     {
       $lookup: {
