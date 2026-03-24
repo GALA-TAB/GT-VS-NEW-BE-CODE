@@ -231,7 +231,6 @@ const VerifyTaxForum = catchAsync(async (req, res, next) => {
   console.log('Tax Forum Verification Status:', vendor?.textForumStatus);
 
   // Send notification + email to vendor
-  const vendorId = taxForum?.vendorId?._id || taxForum?.vendorId;
   const notifTitle = status === 'approved' ? 'EIN Confirmation Letter Approved' : 'EIN Confirmation Letter Rejected';
   const notifMessage = status === 'approved'
     ? 'Your EIN Confirmation Letter has been approved by Gala Tab.'
