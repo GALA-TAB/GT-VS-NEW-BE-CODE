@@ -28,7 +28,7 @@ const signToken = (user, expires = process.env.JWT_EXPIRES_IN) =>
     expiresIn: expires
   });
 
-const generateOTP = (length = 6, expiryTimeMin = 3) => {
+const generateOTP = (length = 6, expiryTimeMin = 2) => {
   const otp = crypto.randomInt(10 ** (length - 1), 10 ** length).toString();
   const expires = Date.now() + expiryTimeMin * 60 * 1000;
   const hash = crypto
