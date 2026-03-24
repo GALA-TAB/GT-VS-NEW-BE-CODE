@@ -183,7 +183,7 @@ const updateTaxForum = catchAsync(async (req, res, next) => {
 });
 
 const VerifyTaxForum = catchAsync(async (req, res, next) => {
-  const { status } = req.body;
+  const { status, rejectionNote } = req.body;
   console.log('Requested Status:', status);
   if (!status) {
     return next(new AppError('Status is required', 400, { status: 'status is required' }));
@@ -192,9 +192,13 @@ const VerifyTaxForum = catchAsync(async (req, res, next) => {
   if (status === false) {
     taxForum = await TaxForum.findByIdAndDelete(req.params.id);
   } else {
+    const updateData = { status };
+    if (status === 'rejected' && rejectionNote) {
+      updateData.rejectionNote = rejectionNote;
+    }
     taxForum = await TaxForum.findByIdAndUpdate(
       req.params.id,
-      { status },
+      updateData,
       {
         new: true,
         runValidators: true

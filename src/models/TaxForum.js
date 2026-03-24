@@ -39,6 +39,10 @@ const TaxSchema = new Schema(
             enum: ['pending', 'approved', 'rejected',"inprogress"],
             default: 'pending'
         },
+        rejectionNote: {
+            type: String,
+            trim: true
+        },
         isDeleted: {
             type: Boolean,
             default: false // Soft delete

@@ -20,6 +20,10 @@ const BusinessCertificateSchema = new Schema(
       enum: ['pending', 'approved', 'rejected', 'inprogress'],
       default: 'pending'
     },
+    rejectionNote: {
+      type: String,
+      trim: true
+    },
     archivedDocuments: [
       {
         documentUrl: { type: String },

@@ -271,7 +271,7 @@ const approveRejectDocs = catchAsync(async (req, res, next) => {
 });
 
 const updateKycStatus = catchAsync(async (req, res, next) => {
-  const { status } = req.body;
+  const { status, rejectionReason } = req.body;
   const { documentId } = req.params;
 
   if (!status) {
@@ -286,9 +286,10 @@ const updateKycStatus = catchAsync(async (req, res, next) => {
     );
   }
 
-
-
   kycDoc.status = status;
+  if (status === 'abandoned' && rejectionReason) {
+    kycDoc.rejectionReason = rejectionReason;
+  }
    const updatedVendor = await Vendor.findByIdAndUpdate(kycDoc?.userId,{
             kycStatus:status,
             kycCompleted:status==="approved"?true:false

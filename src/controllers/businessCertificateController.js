@@ -152,14 +152,19 @@ const updateBusinessCertificate = catchAsync(async (req, res, next) => {
 });
 
 const verifyBusinessCertificate = catchAsync(async (req, res, next) => {
-  const { status } = req.body;
+  const { status, rejectionNote } = req.body;
   if (!status) {
     return next(new AppError('Status is required', 400, { status: 'status is required' }));
   }
 
+  const updateData = { status };
+  if (status === 'rejected' && rejectionNote) {
+    updateData.rejectionNote = rejectionNote;
+  }
+
   const businessCertificate = await BusinessCertificate.findByIdAndUpdate(
     req.params.id,
-    { status },
+    updateData,
     { new: true, runValidators: true }
   );
 
