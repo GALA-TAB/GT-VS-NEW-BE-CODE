@@ -24,6 +24,8 @@ const BusinessCertificateSchema = new Schema(
       type: String,
       trim: true
     },
+    approvedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    approvedAt: { type: Date },
     archivedDocuments: [
       {
         documentUrl: { type: String },

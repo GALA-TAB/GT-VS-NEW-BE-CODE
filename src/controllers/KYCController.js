@@ -3,11 +3,34 @@ const catchAsync = require('../utils/catchAsync');
 const KYCSesssion = require('../models/KYCSesson');
 const { generateOTP } = require('./authController');
 const KYCDocument = require('../models/KYCDocument');
+const BusinessCertificate = require('../models/BusinessCertificate');
+const TaxForum = require('../models/TaxForum');
 const AppError = require('../utils/appError');
 const { kycUploadSchema, approveRejectDocValidation } = require('../utils/joi/KYCValidation');
 const { uploadVeriff } = require('../utils/veriff');
 const Vendor = require('../models/users/Vendor');
 const sendNotification = require('../utils/storeNotification');
+
+// Helper: check if all 3 doc types are approved and auto-verify vendor
+const checkAndAutoVerifyVendor = async (vendorId) => {
+  const [kyc, cert, ein] = await Promise.all([
+    KYCDocument.findOne({ userId: vendorId }),
+    BusinessCertificate.findOne({ vendorId, isDeleted: false }),
+    TaxForum.findOne({ vendorId, isDeleted: false })
+  ]);
+  const allApproved = kyc?.status === 'approved' && cert?.status === 'approved' && ein?.status === 'approved';
+  if (allApproved) {
+    await Vendor.findByIdAndUpdate(vendorId, { isVerified: true });
+    await sendNotification({
+      userId: vendorId,
+      title: 'Verification Complete',
+      message: 'Congratulations! All your documents have been verified. Your account is now fully verified.',
+      type: 'alert',
+    });
+  } else {
+    await Vendor.findByIdAndUpdate(vendorId, { isVerified: false });
+  }
+};
 
 const initiateKyc = catchAsync(async (req, res, next) => {
   try {
@@ -257,6 +280,10 @@ const approveRejectDocs = catchAsync(async (req, res, next) => {
     if (status === 'rejected') {
       kycDoc.rejectionReason = rejectionReason || 'No reason provided';
     }
+    if (status === 'approved') {
+      kycDoc.approvedBy = req.user._id;
+      kycDoc.approvedAt = new Date();
+    }
   const updatedVendor = await Vendor.findByIdAndUpdate(kycDoc?.userId,{
             kycStatus:status,
             kycCompleted:status==="approved"?true:false
@@ -264,6 +291,7 @@ const approveRejectDocs = catchAsync(async (req, res, next) => {
         console.log("updatedVendor",updatedVendor);
 
     await kycDoc.save();
+    await checkAndAutoVerifyVendor(kycDoc.userId);
 
     // Send notification + email to vendor
     const notifTitle = status === 'approved' ? 'Identification Approved' : 'Identification Rejected';
@@ -307,6 +335,10 @@ const updateKycStatus = catchAsync(async (req, res, next) => {
   if (status === 'abandoned' && rejectionReason) {
     kycDoc.rejectionReason = rejectionReason;
   }
+  if (status === 'approved') {
+    kycDoc.approvedBy = req.user._id;
+    kycDoc.approvedAt = new Date();
+  }
    const updatedVendor = await Vendor.findByIdAndUpdate(kycDoc?.userId,{
             kycStatus:status,
             kycCompleted:status==="approved"?true:false
@@ -316,6 +348,7 @@ const updateKycStatus = catchAsync(async (req, res, next) => {
   res.locals.dataId = kycDoc._id;
 
   await kycDoc.save();
+  await checkAndAutoVerifyVendor(kycDoc.userId);
   return res.status(200).json({ success: true, message: `KYC ${status} successfully` });
 
 });
@@ -382,9 +415,9 @@ const getVendorVerificationStatus = catchAsync(async (req, res, next) => {
   const userId = req.user._id;
 
   const [kycDoc, businessCert, taxForum] = await Promise.all([
-    KYCDocument.findOne({ userId }).select('status frontImageUrl backImageUrl selfieImageUrl rejectionReason uploadedAt'),
-    require('../models/BusinessCertificate').findOne({ vendorId: userId, isDeleted: false }).select('status documentUrl rejectionNote createdAt'),
-    require('../models/TaxForum').findOne({ vendorId: userId }).select('status taxDocument rejectionNote createdAt')
+    KYCDocument.findOne({ userId }).select('status frontImageUrl backImageUrl selfieImageUrl rejectionReason uploadedAt approvedBy approvedAt'),
+    BusinessCertificate.findOne({ vendorId: userId, isDeleted: false }).select('status documentUrl rejectionNote createdAt approvedBy approvedAt'),
+    TaxForum.findOne({ vendorId: userId, isDeleted: false }).select('status taxDocument rejectionNote createdAt approvedBy approvedAt')
   ]);
 
   return res.status(200).json({
@@ -414,6 +447,32 @@ const getVendorVerificationStatus = catchAsync(async (req, res, next) => {
   });
 });
 
+// Admin endpoint: get all documents for a specific vendor
+const getVendorAllDocuments = catchAsync(async (req, res, next) => {
+  const { vendorId } = req.params;
+
+  const [kycDoc, businessCert, taxForum, vendor] = await Promise.all([
+    KYCDocument.findOne({ userId: vendorId }).populate('approvedBy', 'firstName lastName email'),
+    BusinessCertificate.findOne({ vendorId, isDeleted: false }).populate('approvedBy', 'firstName lastName email'),
+    TaxForum.findOne({ vendorId, isDeleted: false }).populate('approvedBy', 'firstName lastName email'),
+    Vendor.findById(vendorId).select('firstName lastName email contact profilePicture isVerified kycStatus businessCertificateStatus textForumStatus')
+  ]);
+
+  if (!vendor) {
+    return next(new AppError('Vendor not found', 404));
+  }
+
+  return res.status(200).json({
+    status: 'success',
+    data: {
+      vendor,
+      identification: kycDoc || null,
+      businessCertificate: businessCert || null,
+      einConfirmation: taxForum || null
+    }
+  });
+});
+
 module.exports = {
   initiateKyc,
   uploadKyc,
@@ -422,7 +481,9 @@ module.exports = {
   getallvendor,
   updateKycStatus,
   directUploadKyc,
-  getVendorVerificationStatus
+  getVendorVerificationStatus,
+  getVendorAllDocuments,
+  checkAndAutoVerifyVendor
 };
 
 

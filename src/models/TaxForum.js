@@ -43,6 +43,8 @@ const TaxSchema = new Schema(
             type: String,
             trim: true
         },
+        approvedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+        approvedAt: { type: Date },
         isDeleted: {
             type: Boolean,
             default: false // Soft delete

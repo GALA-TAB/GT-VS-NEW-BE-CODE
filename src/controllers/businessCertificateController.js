@@ -4,6 +4,7 @@ const AppError = require('../utils/appError');
 const Vendor = require('../models/users/Vendor');
 const sendNotification = require('../utils/storeNotification');
 const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDeleteFilter');
+const { checkAndAutoVerifyVendor } = require('./KYCController');
 
 const createBusinessCertificate = catchAsync(async (req, res, next) => {
   const { documentUrl, businessName } = req.body;
@@ -162,6 +163,10 @@ const verifyBusinessCertificate = catchAsync(async (req, res, next) => {
   if (status === 'rejected' && rejectionNote) {
     updateData.rejectionNote = rejectionNote;
   }
+  if (status === 'approved') {
+    updateData.approvedBy = req.user._id;
+    updateData.approvedAt = new Date();
+  }
 
   const businessCertificate = await BusinessCertificate.findByIdAndUpdate(
     req.params.id,
@@ -174,16 +179,19 @@ const verifyBusinessCertificate = catchAsync(async (req, res, next) => {
   }
 
   // Update vendor's businessCertificateStatus
+  const vendorId = businessCertificate.vendorId?._id || businessCertificate.vendorId;
   await Vendor.findByIdAndUpdate(
-    businessCertificate.vendorId?._id || businessCertificate.vendorId,
+    vendorId,
     { businessCertificateStatus: status },
     { new: true }
   );
 
   res.locals.dataId = businessCertificate._id;
 
+  // Auto-verify vendor if all docs approved
+  await checkAndAutoVerifyVendor(vendorId);
+
   // Send notification + email to vendor
-  const vendorId = businessCertificate.vendorId?._id || businessCertificate.vendorId;
   const notifTitle = status === 'approved' ? 'Business Certificate Approved' : 'Business Certificate Rejected';
   const notifMessage = status === 'approved'
     ? 'Your Business Certificate has been approved by Gala Tab.'

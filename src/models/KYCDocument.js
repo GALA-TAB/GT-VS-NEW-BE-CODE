@@ -17,6 +17,8 @@ const KYCDocumentSchema = new Schema({
     default: 'inprogress'
   },
   rejectionReason: { type: String },
+  approvedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  approvedAt: { type: Date },
   country: {
     type: String,
     trim: true

@@ -7,6 +7,7 @@ const User = require('../models/users/User');
 const sendNotification = require('../utils/storeNotification');
 const Vendor = require('../models/users/Vendor');
 const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDeleteFilter');
+const { checkAndAutoVerifyVendor } = require('./KYCController');
 
 const createTaxForum = catchAsync(async (req, res, next) => {
   const { businessName, taxClassification, taxId, deliveryForm, taxDocument } = req.body;
@@ -196,6 +197,10 @@ const VerifyTaxForum = catchAsync(async (req, res, next) => {
     if (status === 'rejected' && rejectionNote) {
       updateData.rejectionNote = rejectionNote;
     }
+    if (status === 'approved') {
+      updateData.approvedBy = req.user._id;
+      updateData.approvedAt = new Date();
+    }
     taxForum = await TaxForum.findByIdAndUpdate(
       req.params.id,
       updateData,
@@ -211,11 +216,17 @@ const VerifyTaxForum = catchAsync(async (req, res, next) => {
 
   res.locals.dataId = taxForum?._id;
   console.log('Tax Forum ID:', taxForum?._id, status, taxForum?.vendorId);
+  const vendorId = taxForum?.vendorId?._id || taxForum?.vendorId;
   const vendor = await Vendor.findByIdAndUpdate(
-    taxForum?.vendorId?._id || taxForum?.vendorId,
+    vendorId,
     { textForumStatus: status },
     { new: true }
   );
+
+  // Auto-verify vendor if all docs approved
+  if (status === 'approved') {
+    await checkAndAutoVerifyVendor(vendorId);
+  }
 
   console.log('Tax Forum Verification Status:', vendor?.textForumStatus);
 
