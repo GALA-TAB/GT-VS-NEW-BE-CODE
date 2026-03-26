@@ -2,6 +2,7 @@ const catchAsync = require('../utils/catchAsync');
 const BusinessCertificate = require('../models/BusinessCertificate');
 const AppError = require('../utils/appError');
 const Vendor = require('../models/users/Vendor');
+const User = require('../models/users/User');
 const sendNotification = require('../utils/storeNotification');
 const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDeleteFilter');
 const { checkAndAutoVerifyVendor } = require('./KYCController');
@@ -29,6 +30,20 @@ const createBusinessCertificate = catchAsync(async (req, res, next) => {
     existing.status = 'pending';
     await existing.save();
 
+    // Notify admin about resubmitted business certificate
+    const admin = await User.findOne({ role: 'admin' });
+    if (admin) {
+      await sendNotification({
+        userId: admin._id,
+        title: 'Business Certificate Resubmitted',
+        message: `${vendor.firstName} ${vendor.lastName} has resubmitted their business certificate for review.`,
+        type: 'alert',
+        fortype: 'new_venue',
+        permission: 'vendorManagement',
+        linkUrl: `/admin-dashboard/Verified-Documents-Details?vendorId=${vendor._id}`
+      });
+    }
+
     res.locals.dataId = existing._id;
     return res.status(200).json({
       status: 'success',
@@ -43,6 +58,20 @@ const createBusinessCertificate = catchAsync(async (req, res, next) => {
     businessName,
     status: 'pending'
   });
+
+  // Notify admin about new business certificate submission
+  const admin = await User.findOne({ role: 'admin' });
+  if (admin) {
+    await sendNotification({
+      userId: admin._id,
+      title: 'New Business Certificate Submitted',
+      message: `${vendor.firstName} ${vendor.lastName} has submitted a business certificate for review.`,
+      type: 'alert',
+      fortype: 'new_venue',
+      permission: 'vendorManagement',
+      linkUrl: `/admin-dashboard/Verified-Documents-Details?vendorId=${vendor._id}`
+    });
+  }
 
   res.locals.dataId = businessCertificate._id;
   res.status(200).json({

@@ -42,6 +42,21 @@ const createTaxForum = catchAsync(async (req, res, next) => {
     upsert: true,
     runValidators: true
   });
+
+  // Notify admin about new EIN/Tax Forum submission
+  const admin = await User.findOne({ role: 'admin' });
+  if (admin) {
+    await sendNotification({
+      userId: admin._id,
+      title: 'New EIN Confirmation Submitted',
+      message: `${vendor.firstName} ${vendor.lastName} has submitted an EIN confirmation for review.`,
+      type: 'alert',
+      fortype: 'new_venue',
+      permission: 'vendorManagement',
+      linkUrl: `/admin-dashboard/Verified-Documents-Details?vendorId=${vendor._id}`
+    });
+  }
+
   res.locals.dataId = taxForum._id; // Store the ID of the created FAQ in res.locals
   res.status(200).json({
     status: 'success',

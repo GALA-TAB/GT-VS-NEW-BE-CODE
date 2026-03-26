@@ -9,6 +9,7 @@ const AppError = require('../utils/appError');
 const { kycUploadSchema, approveRejectDocValidation } = require('../utils/joi/KYCValidation');
 const { uploadVeriff } = require('../utils/veriff');
 const Vendor = require('../models/users/Vendor');
+const User = require('../models/users/User');
 const sendNotification = require('../utils/storeNotification');
 
 // Helper: check if all 3 doc types are approved and auto-verify vendor
@@ -386,6 +387,20 @@ const directUploadKyc = catchAsync(async (req, res, next) => {
     existing.status = 'pending';
     await existing.save();
 
+    // Notify admin about resubmitted identification
+    const admin = await User.findOne({ role: 'admin' });
+    if (admin) {
+      await sendNotification({
+        userId: admin._id,
+        title: 'Identification Resubmitted',
+        message: `${req.user.firstName} ${req.user.lastName} has resubmitted their identification documents for review.`,
+        type: 'alert',
+        fortype: 'new_venue',
+        permission: 'vendorManagement',
+        linkUrl: `/admin-dashboard/Verified-Documents-Details?vendorId=${userId}`
+      });
+    }
+
     res.locals.dataId = existing._id;
     return res.status(200).json({
       status: 'success',
@@ -402,6 +417,20 @@ const directUploadKyc = catchAsync(async (req, res, next) => {
     selfieImageUrl: selfieImage,
     status: 'pending'
   });
+
+  // Notify admin about new identification submission
+  const admin = await User.findOne({ role: 'admin' });
+  if (admin) {
+    await sendNotification({
+      userId: admin._id,
+      title: 'New Identification Submitted',
+      message: `${req.user.firstName} ${req.user.lastName} has submitted identification documents for review.`,
+      type: 'alert',
+      fortype: 'new_venue',
+      permission: 'vendorManagement',
+      linkUrl: `/admin-dashboard/Verified-Documents-Details?vendorId=${userId}`
+    });
+  }
 
   res.locals.dataId = kyc._id;
   return res.status(200).json({
