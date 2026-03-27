@@ -90,14 +90,6 @@ const getServiceBookingPrice = (
         ) {
           totalPrice += dayPrice;
         }
-      } else if (pricingModel === "perPerson") {
-        if (
-          checkInLocal.isBefore(serviceEnd) &&
-          checkOutLocal.isAfter(serviceStart)
-        ) {
-          const numberOfGuests = serviceInfo?.numberOfGuests || 1;
-          totalPrice += dayPrice * numberOfGuests;
-        }
       }
     }
     current = current.add(1, "day");
@@ -194,11 +186,6 @@ const checkBookingDatesForExtension = (pricingModel, checkIn, checkOut, serviceD
         // Only count if booking overlaps service hours
         if (checkOutLocal.isAfter(serviceStart) && checkInLocal.isBefore(serviceEnd)) {
           totalDuration += 1; // 1 day
-        }
-      } else if (pricingModel === 'perPerson') {
-        // Same as daily for duration calculation - per person pricing is handled separately
-        if (checkOutLocal.isAfter(serviceStart) && checkInLocal.isBefore(serviceEnd)) {
-          totalDuration += 1;
         }
       }
     }
