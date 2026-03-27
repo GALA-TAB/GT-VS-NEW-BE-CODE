@@ -191,6 +191,13 @@ const serviceupdateSchema = Joi.object({
             price: Joi.number().min(0).messages({
                 "number.min": "Price must be at least 0.",
                 "any.required": "Price is required."
+            }),
+            pricingType: Joi.string().valid("flat", "quantity").default("flat").messages({
+                "string.valid": "Pricing type must be either flat or quantity."
+            }),
+            quantity: Joi.number().integer().min(1).default(1).messages({
+                "number.min": "Quantity must be at least 1.",
+                "number.integer": "Quantity must be a whole number."
             })
         })
     ),

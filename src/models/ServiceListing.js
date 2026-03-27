@@ -213,6 +213,16 @@ const ServiceListingSchema = new mongoose.Schema(
         description:{
            type: String, 
           trim: true
+        },
+        pricingType: {
+          type: String,
+          enum: ['flat', 'quantity'],
+          default: 'flat'
+        },
+        quantity: {
+          type: Number,
+          default: 1,
+          min: 1
         }
       }
     ],

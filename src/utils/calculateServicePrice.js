@@ -33,7 +33,11 @@ const getServiceBookingPrice = (
 
   // extra add-ons
   const servicePriceValue = addOnServices?.reduce(
-    (acc, curr) => acc + Number(curr.price || 0),
+    (acc, curr) => {
+      const price = Number(curr.price || 0);
+      const quantity = curr.pricingType === 'quantity' ? Number(curr.quantity || 1) : 1;
+      return acc + (price * quantity);
+    },
     0
   );
 
