@@ -170,8 +170,8 @@ const serviceupdateSchema = Joi.object({
         "array.min": "At least one service day is required.",
         "any.required": "Service days are required."
     }),
-    pricingModel: Joi.string().valid("hourly", "daily").messages({
-        "string.valid": "Pricing model must be one of the following: hourly, daily, weekly, monthly.",
+    pricingModel: Joi.string().valid("hourly", "daily", "perPerson").messages({
+        "string.valid": "Pricing model must be one of the following: hourly, daily, perPerson.",
         "any.required": "Pricing model is required."
     }),
     offDayPricing: Joi.boolean().messages({
