@@ -170,9 +170,25 @@ const serviceupdateSchema = Joi.object({
         "array.min": "At least one service day is required.",
         "any.required": "Service days are required."
     }),
-    pricingModel: Joi.string().valid("hourly", "daily").messages({
-        "string.valid": "Pricing model must be one of the following: hourly, daily, weekly, monthly.",
+    pricingModel: Joi.string().valid("hourly", "daily", "multiHour").messages({
+        "string.valid": "Pricing model must be one of the following: hourly, daily, multiHour.",
         "any.required": "Pricing model is required."
+    }),
+    hourlyPackages: Joi.array().items(
+        Joi.object({
+            hours: Joi.number().integer().min(1).required().messages({
+                "number.min": "Hours must be at least 1.",
+                "number.integer": "Hours must be a whole number.",
+                "any.required": "Hours is required."
+            }),
+            price: Joi.number().min(0).required().messages({
+                "number.min": "Price must be at least 0.",
+                "any.required": "Price is required."
+            }),
+            label: Joi.string().trim().allow("").optional()
+        })
+    ).messages({
+        "array.base": "Hourly packages must be an array."
     }),
     offDayPricing: Joi.boolean().messages({
         "boolean.base": "offDayPricing must be a boolean.",

@@ -189,9 +189,27 @@ const ServiceListingSchema = new mongoose.Schema(
     ],
     pricingModel: {
       type: String,
-      enum: ['hourly', 'daily'],
+      enum: ['hourly', 'daily', 'multiHour'],
       trim: true
     },
+    hourlyPackages: [
+      {
+        hours: {
+          type: Number,
+          required: true,
+          min: 1
+        },
+        price: {
+          type: Number,
+          required: true,
+          min: 0
+        },
+        label: {
+          type: String,
+          trim: true
+        }
+      }
+    ],
     offDayPricing: {
       type: Boolean,
       default: false

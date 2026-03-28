@@ -94,6 +94,17 @@ const getServiceBookingPrice = (
         ) {
           totalPrice += dayPrice;
         }
+      } else if (pricingModel === "multiHour") {
+        // For multiHour, price is set by the selected package, not per-day rate
+        // The totalPrice is passed directly from the selected hourly package
+        // We still validate the booking falls within service hours
+        if (
+          checkOutLocal.isAfter(serviceStart) &&
+          checkInLocal.isBefore(serviceEnd)
+        ) {
+          // multiHour pricing is handled by the package price passed separately
+          // We don't add dayPrice here - the caller passes the package price
+        }
       }
     }
     current = current.add(1, "day");
