@@ -139,10 +139,13 @@ module.exports = {
     try {
       const { userId } = params;
 
-      await Notification.deleteMany({ userId: userId });
+      await Notification.updateMany(
+        { userId: userId, isRead: false },
+        { $set: { isRead: true } }
+      );
       return true;
     } catch (error) {
-      console.error('JWT decoding error:', error.message);
+      console.error('Error marking notifications as read:', error.message);
 
       return false;
     }
