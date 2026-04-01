@@ -424,6 +424,14 @@ const bookingformat = [
   { $unwind: { path: '$service', preserveNullAndEmptyArrays: true } },
   {
     $lookup: {
+      from: 'eventtypes',
+      localField: 'service.eventTypes',
+      foreignField: '_id',
+      as: 'service.eventTypes'
+    }
+  },
+  {
+    $lookup: {
       from: 'users',
       localField: 'service.vendorId',
       foreignField: '_id',
@@ -568,6 +576,7 @@ const bookingformat = [
       'service.vendorId': 1,
       'service.serviceTypeId': 1,
       'service.location': 1,
+      'service.eventTypes': 1,
       // Include serviceAddress only for confirmed/completed bookings (privacy protection).
       // This is the service/venue address, NOT the vendor's personal address.
       'service.serviceAddress': {
