@@ -248,6 +248,18 @@ const serviceupdateSchema = Joi.object({
         })
     ).messages({
         "array.base": "Custom amenities must be an array."
+    }),
+    clauses: Joi.array().items(
+        Joi.object({
+            title: Joi.string().trim().max(200).allow("").messages({
+                "string.max": "Clause title must be at most 200 characters."
+            }),
+            description: Joi.string().trim().max(2000).allow("").messages({
+                "string.max": "Clause description must be at most 2000 characters."
+            })
+        })
+    ).messages({
+        "array.base": "Clauses must be an array."
     })
 
 });

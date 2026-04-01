@@ -286,6 +286,18 @@ const ServiceListingSchema = new mongoose.Schema(
       type: String,
       trim: true
     },
+    clauses: [
+      {
+        title: {
+          type: String,
+          trim: true
+        },
+        description: {
+          type: String,
+          trim: true
+        }
+      }
+    ],
     completed: {
       type: Boolean,
       default: false
