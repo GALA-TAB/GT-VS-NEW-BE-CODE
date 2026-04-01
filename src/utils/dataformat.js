@@ -621,6 +621,8 @@ const bookingformat = [
       cancelRequest: 1,
       cancelReason: 1,
       extensionrequest: 1,
+      eventType: 1,
+      guestsOfHonor: 1,
       addOnServices: '$servicePrice'
     }
   }
