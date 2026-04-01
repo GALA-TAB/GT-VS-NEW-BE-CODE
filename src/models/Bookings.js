@@ -100,6 +100,17 @@ const BookingSchema = new Schema(
           required: true
         }
       }
+    ],
+    eventType: {
+      type: String,
+      trim: true,
+      default: null
+    },
+    guestsOfHonor: [
+      {
+        type: String,
+        trim: true
+      }
     ]
   },
   { timestamps: true }

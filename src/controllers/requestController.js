@@ -91,7 +91,9 @@ const createBooking = catchAsync(async (req, res, next) => {
     message,
     couponCode,
     addOnServices,
-    timezone
+    timezone,
+    eventType,
+    guestsOfHonor
   } = req.body;
 
   // ── Text content moderation on booking message ──
@@ -281,7 +283,9 @@ const createBooking = catchAsync(async (req, res, next) => {
     totalPrice: paymentIntent.amount / 100,
     message,
     paymentIntentId: paymentIntent?.id,
-    servicePrice: addOnServices
+    servicePrice: addOnServices,
+    eventType: eventType || null,
+    guestsOfHonor: guestsOfHonor || []
   });
   res.locals.dataId = booking._id; // Store the ID of the created booking in res.locals
 

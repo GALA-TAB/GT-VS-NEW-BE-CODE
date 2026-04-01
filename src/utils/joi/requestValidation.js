@@ -33,6 +33,12 @@ const requestSchema = Joi.object({
     totalPrice: Joi.number().min(0).required().messages({
         "number.min": "Total price must be at least 0.",
         "any.required": "Total price is required."
+    }),
+    eventType: Joi.string().trim().optional().allow('', null).messages({
+        "string.base": "Event type must be a string."
+    }),
+    guestsOfHonor: Joi.array().items(Joi.string().trim()).optional().messages({
+        "array.base": "Guests of honor must be an array of names."
     })
 
 });
