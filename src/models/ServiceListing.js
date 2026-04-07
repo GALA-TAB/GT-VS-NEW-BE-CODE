@@ -184,6 +184,10 @@ const ServiceListingSchema = new mongoose.Schema(
         },
         price: {
           type: Number
+        },
+        extendsNextDay: {
+          type: Boolean,
+          default: false
         }
       }
     ],

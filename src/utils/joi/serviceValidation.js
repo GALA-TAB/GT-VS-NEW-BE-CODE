@@ -163,7 +163,10 @@ const serviceupdateSchema = Joi.object({
                     "number.base": "Price must be a number.",
                     "any.required": "Price is required."
                 }
-            )
+            ),
+            extendsNextDay: Joi.boolean().default(false).messages({
+                "boolean.base": "extendsNextDay must be a boolean."
+            })
 
         })
     ).messages({
