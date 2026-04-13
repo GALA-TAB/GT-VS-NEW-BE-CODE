@@ -176,16 +176,24 @@ function detectPaymentInfo(raw, clean) {
 function detectLocationIdentity(raw, _clean) {
   const matches = new Set();
   const patterns = [
-    // Generic street address (number + street + suffix), even without sharing-intent phrase.
-    // This blocks direct address drops in listing descriptions (e.g., "123 Main St").
-    /\b\d{1,6}\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,5}\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|way|cir(?:cle)?|pkwy|parkway|ter(?:race)?)\b(?:\s*(?:#|apt\.?|unit|suite|ste\.?|fl\.?|floor)\s*[A-Za-z0-9-]+)?/gi,
-    // Street address with explicit sharing-intent context.
-    // Note: listing's own registered address is also separately blocked via
-    // addressPartsToBlock in checkContent.
-    /\b(?:(?:my|our|the)\s+(?:address|location|place)\s+(?:is|at)|located\s+at|find\s+(?:us|me)\s+at|directions?\s*:|come\s+to\s+(?:my|our))\s*\d{1,5}\s+[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|way|cir(?:cle)?|pkwy|parkway|ter(?:race)?)\b/gi,
+    // ── Street addresses ──
+    // Bare numbered street address: "123 Main St", "456 Oak Avenue"
+    /\b\d{1,5}\s+[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|way|cir(?:cle)?|pkwy|parkway|ter(?:race)?|hwy|highway)\b/gi,
+    // Multi-word street name: "123 Martin Luther King Blvd"
+    /\b\d{1,5}\s+(?:[A-Za-z]+\s+){1,4}(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|way|cir(?:cle)?|pkwy|parkway|ter(?:race)?|hwy|highway)\b/gi,
+    // Address with city/state/zip: "Brooklyn, NY 11201" or "New York, NY"
+    /\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?,?\s+[A-Z]{2}\s+\d{5}(?:-\d{4})?\b/g,
+    // Standalone 5-digit zip codes near state abbreviations
+    /\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b/g,
+    // Intent phrases: "my address is", "located at", "find us at", etc.
+    /\b(?:(?:my|our|the)\s+(?:address|location|place)\s+(?:is|at)|located\s+at|find\s+(?:us|me)\s+at|directions?\s*:|come\s+to\s+(?:my|our))\b/gi,
     // "Send me your address" / "meet me at"
     /\b(?:send|give)\s+(?:me|us)\s+(?:your\s+)?(?:address|location)\b/gi,
     /\b(?:meet|come|stop\s+by)\s+(?:me\s+)?(?:at|to)\s+\d/gi,
+    // PO Box
+    /\b(?:p\.?\s*o\.?\s*box)\s+\d+\b/gi,
+    // Apartment / Suite / Unit number patterns
+    /\b(?:apt|apartment|suite|ste|unit|#)\s*\.?\s*\d+\b/gi,
     // SSN pattern — require dashes/dots to distinguish from random digits
     /\b\d{3}[-.]\d{2}[-.]\d{4}\b/g,
     // DOB patterns: "born on", "date of birth"

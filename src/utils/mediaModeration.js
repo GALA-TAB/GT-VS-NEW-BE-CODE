@@ -477,10 +477,20 @@ const CONTACT_PATTERNS = [
   { category: CAT.QR, pattern: /\bscan\s+(?:this|the|my)\s+(?:code|qr)\b/gi },
 
   /* ────────── 12. PHYSICAL ADDRESSES ────────── */
-  // Require strong intent context before a numbered street address to avoid
-  // false positives in venue descriptions (e.g. "We're on Oak Avenue").
-  // Bare numbered addresses without explicit sharing intent are allowed.
-  { category: CAT.ADDRESS, pattern: /\b(?:(?:my|our|the)\s+(?:address|location|place)\s+(?:is|at)|located\s+at|find\s+(?:us|me)\s+at|directions?\s*:)\s*\d{1,5}\s+[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|hwy|highway)\b/gi },
+  // Bare numbered street address: "123 Main St", "456 Oak Avenue"
+  { category: CAT.ADDRESS, pattern: /\b\d{1,5}\s+[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|hwy|highway)\b/gi },
+  // Multi-word street name: "123 Martin Luther King Blvd"
+  { category: CAT.ADDRESS, pattern: /\b\d{1,5}\s+(?:[A-Za-z]+\s+){1,4}(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|way|pl(?:ace)?|cir(?:cle)?|pkwy|parkway|terr(?:ace)?|hwy|highway)\b/gi },
+  // Address with city/state/zip: "Brooklyn, NY 11201"
+  { category: CAT.ADDRESS, pattern: /\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?,?\s+[A-Z]{2}\s+\d{5}(?:-\d{4})?\b/g },
+  // State abbreviation + zip code
+  { category: CAT.ADDRESS, pattern: /\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b/g },
+  // PO Box
+  { category: CAT.ADDRESS, pattern: /\b(?:p\.?\s*o\.?\s*box)\s+\d+\b/gi },
+  // Apartment / Suite / Unit
+  { category: CAT.ADDRESS, pattern: /\b(?:apt|apartment|suite|ste|unit|#)\s*\.?\s*\d+\b/gi },
+  // Intent phrases for address sharing
+  { category: CAT.ADDRESS, pattern: /\b(?:(?:my|our|the)\s+(?:address|location|place)\s+(?:is|at)|located\s+at|find\s+(?:us|me)\s+at|directions?\s*:)\b/gi },
   // Zip codes (keyword-gated to reduce false positives)
   { category: CAT.ADDRESS, pattern: /\b(?:zip|postal|zip\s*code)\s*:?\s*\d{5}(?:-\d{4})?\b/gi },
   // "send me your address" / "meet me at…" / "come to…"
