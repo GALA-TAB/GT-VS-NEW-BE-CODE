@@ -176,11 +176,12 @@ function detectPaymentInfo(raw, clean) {
 function detectLocationIdentity(raw, _clean) {
   const matches = new Set();
   const patterns = [
-    // Street address with explicit sharing-intent context only.
-    // A bare "123 Main St" in a venue description is NOT flagged — vendors
-    // naturally reference their location. Contact-sharing phrases ARE flagged.
-    // Note: the listing's own registered address is separately blocked via
-    // addressPartsToBlock in checkContent, regardless of context.
+    // Generic street address (number + street + suffix), even without sharing-intent phrase.
+    // This blocks direct address drops in listing descriptions (e.g., "123 Main St").
+    /\b\d{1,6}\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,5}\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|way|cir(?:cle)?|pkwy|parkway|ter(?:race)?)\b(?:\s*(?:#|apt\.?|unit|suite|ste\.?|fl\.?|floor)\s*[A-Za-z0-9-]+)?/gi,
+    // Street address with explicit sharing-intent context.
+    // Note: listing's own registered address is also separately blocked via
+    // addressPartsToBlock in checkContent.
     /\b(?:(?:my|our|the)\s+(?:address|location|place)\s+(?:is|at)|located\s+at|find\s+(?:us|me)\s+at|directions?\s*:|come\s+to\s+(?:my|our))\s*\d{1,5}\s+[A-Za-z]+\s+(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|rd|road|ln|lane|ct|court|pl(?:ace)?|way|cir(?:cle)?|pkwy|parkway|ter(?:race)?)\b/gi,
     // "Send me your address" / "meet me at"
     /\b(?:send|give)\s+(?:me|us)\s+(?:your\s+)?(?:address|location)\b/gi,
