@@ -5,9 +5,14 @@ const requestSchema = Joi.object({
         "string.pattern.base": "serviceTypeId must be a valid MongoDB ObjectId.",
         "any.required": "serviceTypeId is required."
     }),
+    paymentSource: Joi.string().valid('card', 'wallet').optional().default('card'),
     paymentMethodid: Joi.string()
         .pattern(/^[a-zA-Z0-9_-]+$/)
-        .required()
+        .when('paymentSource', {
+            is: 'wallet',
+            then: Joi.optional().allow('', null),
+            otherwise: Joi.required()
+        })
         .messages({
             "string.pattern.base": "Payment Method ID must be a valid format",
             "string.empty": "Payment Method ID cannot be empty.",

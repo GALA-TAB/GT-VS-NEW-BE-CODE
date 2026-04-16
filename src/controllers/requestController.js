@@ -36,6 +36,7 @@ const Extensionbooking = require('../models/Extensionbooking');
 const Discount = require('../models/PromoDiscountCode');
 const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDeleteFilter');
 const { moderateText } = require('../utils/mediaModeration');
+const Wallet = require('../models/Wallet');
 
 const filter = (param) => {
   const { status, startDate, endDate, cancelRequest } = param;
@@ -88,6 +89,7 @@ const createBooking = catchAsync(async (req, res, next) => {
     checkOut,
     guests,
     paymentMethodid,
+    paymentSource,
     message,
     couponCode,
     addOnServices,
@@ -95,6 +97,8 @@ const createBooking = catchAsync(async (req, res, next) => {
     eventType,
     guestsOfHonor
   } = req.body;
+
+  const isWalletPayment = paymentSource === 'wallet';
 
   // ── Text content moderation on booking message ──
   if (message) {
@@ -199,21 +203,23 @@ const createBooking = catchAsync(async (req, res, next) => {
 
   // Get or create a Stripe customer
   let { stripeCustomerId } = user;
-  if (!stripeCustomerId) {
-    const customer = await createCustomer({
-      email: user.email,
-      name: user.name
-    });
+  if (!isWalletPayment) {
+    if (!stripeCustomerId) {
+      const customer = await createCustomer({
+        email: user.email,
+        name: user.name
+      });
 
-    stripeCustomerId = customer.id;
+      stripeCustomerId = customer.id;
 
-    // Save stripeCustomerId to the database
-    await Customer.findByIdAndUpdate(userId, {
-      $set: {
-        stripeCustomerId,
-        paymentMethodid
-      }
-    });
+      // Save stripeCustomerId to the database
+      await Customer.findByIdAndUpdate(userId, {
+        $set: {
+          stripeCustomerId,
+          paymentMethodid
+        }
+      });
+    }
   }
   const { pricingModel, serviceDays, instantBookingCheck } = listingExists;
   let totalPriceforConfirm = getServiceBookingPrice(
@@ -228,15 +234,17 @@ const createBooking = catchAsync(async (req, res, next) => {
   );
 
   console.log('totalPriceforConfirm', totalPriceforConfirm);
-  await attachPaymentMethod({
-    paymentMethodId: paymentMethodid,
-    customerId: stripeCustomerId
-  });
-  // Attach payment method to the customer
-  await updateCustomer({
-    stripeCustomerId,
-    paymentMethodid
-  });
+  if (!isWalletPayment) {
+    await attachPaymentMethod({
+      paymentMethodId: paymentMethodid,
+      customerId: stripeCustomerId
+    });
+    // Attach payment method to the customer
+    await updateCustomer({
+      stripeCustomerId,
+      paymentMethodid
+    });
+  }
 
   if (couponCode) {
     const discount = await Discount.findOne({
@@ -262,17 +270,37 @@ const createBooking = catchAsync(async (req, res, next) => {
     totalPriceforConfirm -= discountValue;
   }
 
-  const paymentAmount = Math.round(totalPriceforConfirm * 100);
-  const currency = 'usd';
-  const paymentMethodId = paymentMethodid;
-  const customerId = stripeCustomerId;
-  const paymentIntent = await createPaymentIntents({
-    amount: paymentAmount,
-    currency,
-    paymentMethodId,
-    customerId,
-    instantBookingCheck
-  });
+  let paymentIntent = null;
+  let finalTotalPrice = totalPriceforConfirm;
+
+  if (isWalletPayment) {
+    // ── Wallet payment path ──
+    const wallet = await Wallet.findOne({ user: userId });
+    if (!wallet || wallet.balance < totalPriceforConfirm) {
+      return next(new AppError('Insufficient wallet balance', 400));
+    }
+    wallet.balance -= totalPriceforConfirm;
+    wallet.transactions.push({
+      type: 'payment',
+      amount: -totalPriceforConfirm,
+      description: `Booking payment for ${listingExists.title || 'service'}`,
+    });
+    await wallet.save();
+  } else {
+    // ── Card payment path (existing Stripe flow) ──
+    const paymentAmount = Math.round(totalPriceforConfirm * 100);
+    const currency = 'usd';
+    const paymentMethodId = paymentMethodid;
+    const customerId = stripeCustomerId;
+    paymentIntent = await createPaymentIntents({
+      amount: paymentAmount,
+      currency,
+      paymentMethodId,
+      customerId,
+      instantBookingCheck
+    });
+    finalTotalPrice = paymentIntent.amount / 100;
+  }
 
   const booking = await Booking.create({
     user: userId,
@@ -280,9 +308,9 @@ const createBooking = catchAsync(async (req, res, next) => {
     checkIn,
     checkOut,
     guests,
-    totalPrice: paymentIntent.amount / 100,
+    totalPrice: finalTotalPrice,
     message,
-    paymentIntentId: paymentIntent?.id,
+    paymentIntentId: paymentIntent?.id || null,
     servicePrice: addOnServices,
     eventType: eventType || null,
     guestsOfHonor: guestsOfHonor || []
@@ -290,13 +318,13 @@ const createBooking = catchAsync(async (req, res, next) => {
   res.locals.dataId = booking._id; // Store the ID of the created booking in res.locals
 
   console.log(paymentIntent, 'paymentIntent created successfully');
-  if (instantBookingCheck === true && paymentIntent.status === 'succeeded') {
+  if (isWalletPayment || (instantBookingCheck === true && paymentIntent?.status === 'succeeded')) {
     await PayHistory.create({
-      payoutId: paymentIntent?.id,
+      payoutId: isWalletPayment ? `wallet_${booking._id}` : paymentIntent?.id,
       customerId: booking?.user,
       bookingId: booking._id,
-      bank: paymentIntent?.cardDetails?.brand || 'N/A',
-      totalAmount: Math.round(paymentIntent?.amount / 100),
+      bank: isWalletPayment ? 'Wallet' : (paymentIntent?.cardDetails?.brand || 'N/A'),
+      totalAmount: isWalletPayment ? Math.round(finalTotalPrice) : Math.round(paymentIntent?.amount / 100),
 
       status: 'Paid'
     });
