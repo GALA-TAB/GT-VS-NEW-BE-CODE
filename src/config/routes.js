@@ -44,7 +44,8 @@ const {
   adminNoteRoute,
   venueDetectionRoute,
   sharedCartPaymentRoute,
-  businessCertificateRoute
+  businessCertificateRoute,
+  walletRoute
 } = require('../routes');
 
 const otherRoutes = require('./otherRoutes');
@@ -117,6 +118,7 @@ module.exports = (app) => {
   app.use('/api/listing-detection', venueDetectionRoute);
   app.use('/api/shared-cart-payment', sharedCartPaymentRoute);
   app.use('/api/businessCertificate', businessCertificateRoute);
+  app.use('/api/wallet', walletRoute);
   otherRoutes(app);
 };
                                                                                       
