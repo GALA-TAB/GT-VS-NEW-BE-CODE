@@ -24,6 +24,7 @@ const createDiscount = catchAsync(async (req, res, next) => {
     minAmountInCart,
     maxTotalUsage,
     discountCode,
+    serviceListingId,
     status
   } = req.body;
 
@@ -52,6 +53,7 @@ const createDiscount = catchAsync(async (req, res, next) => {
     minAmountInCart,
     maxTotalUsage,
     discountCode,
+    serviceListingId: serviceListingId || null,
     status: status || 'Active',
     vendorId: req.user._id // Assuming req.user contains the authenticated user's information
   };

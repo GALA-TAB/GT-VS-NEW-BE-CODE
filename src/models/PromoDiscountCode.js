@@ -6,6 +6,11 @@ const discountSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+  serviceListingId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ServiceListing',
+    default: null
+  },
   discountName: {
     type: String,
     required: true

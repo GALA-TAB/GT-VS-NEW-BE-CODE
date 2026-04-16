@@ -4,6 +4,7 @@ exports.discountValidation = Joi.object({
   discountId: Joi.string(),
   discountName: Joi.string(),
   discountType: Joi.string().valid('Percentage', 'Fixed'),
+  serviceListingId: Joi.string().allow(null, ''),
   startDate: Joi.date(),
   endDate: Joi.date(),
   percentage: Joi.number(),
