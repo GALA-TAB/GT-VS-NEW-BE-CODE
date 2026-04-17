@@ -582,6 +582,96 @@ const adminReleaseEscrow = catchAsync(async (req, res, next) => {
   });
 });
 
+// ═════════════════════════════════════════════════════════════════════════════
+// POST /api/payment/vendor-refund/:bookingId   (vendor only)
+// Vendor issues a partial refund to the customer from their own booking earnings.
+// Body: { refundAmount: number, reason?: string }
+// ═════════════════════════════════════════════════════════════════════════════
+const vendorPartialRefund = catchAsync(async (req, res, next) => {
+  const { bookingId } = req.params;
+  const { refundAmount, reason } = req.body;
+
+  if (!refundAmount || Number(refundAmount) <= 0) {
+    return next(new AppError('refundAmount is required and must be greater than 0.', 400));
+  }
+
+  const booking = await Bookings.findById(bookingId).populate({
+    path: 'service',
+    select: 'vendorId',
+    populate: { path: 'vendorId', model: 'User' }
+  });
+  if (!booking) return next(new AppError('Booking not found', 404));
+
+  // Verify the requesting vendor owns this booking's service
+  const vendorId = booking.service?.vendorId?._id?.toString();
+  if (vendorId !== req.user._id.toString()) {
+    return next(new AppError('You are not authorised to refund this booking.', 403));
+  }
+
+  const payment = await Payments.findOne({ booking: bookingId });
+  if (!payment) return next(new AppError('No payment record found for this booking.', 404));
+
+  // Only allow refunds on held or released escrow (not already refunded)
+  if (['refunded', 'partial_refund'].includes(payment.escrowStatus)) {
+    return next(new AppError('This booking has already been refunded.', 400));
+  }
+
+  const amount = Number(refundAmount);
+  if (amount > payment.amount) {
+    return next(new AppError(`Refund amount ($${amount.toFixed(2)}) exceeds the payment amount ($${payment.amount.toFixed(2)}).`, 400));
+  }
+
+  const chargeId = payment.stripeChargeId;
+  if (!chargeId) {
+    return next(new AppError('No Stripe charge found for this booking — refund not possible.', 400));
+  }
+
+  // Process the refund via Stripe
+  const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+  let refund;
+  try {
+    refund = await stripe.refunds.create({
+      charge: chargeId,
+      amount: Math.round(amount * 100), // Stripe expects cents
+    });
+  } catch (stripeErr) {
+    console.error('[vendorPartialRefund] Stripe refund error:', stripeErr);
+    return next(new AppError('Stripe refund failed: ' + stripeErr.message, 500));
+  }
+
+  // Update payment record
+  payment.stripeRefundId = payment.stripeRefundId
+    ? `${payment.stripeRefundId},${refund.id}`
+    : refund.id;
+  payment.escrowStatus = 'partial_refund';
+  await payment.save();
+
+  // Record the refund reason on the booking
+  booking.disputeResolution = 'partial_refund';
+  booking.disputeReason = reason ? `Vendor refund: ${reason.trim()}` : 'Vendor-initiated partial refund';
+  booking.disputeResolvedAt = new Date();
+  await booking.save();
+
+  // Notify customer
+  try {
+    const customer = await User.findById(booking.user);
+    if (customer) {
+      await new Email(customer).sendGeneric({
+        subject: 'Partial Refund Issued',
+        message: `A partial refund of $${amount.toFixed(2)} has been issued for your booking #${bookingId.toString().slice(-6).toUpperCase()}. The refund will appear on your original payment method within 5-10 business days.`
+      }).catch(() => {});
+    }
+  } catch (emailErr) {
+    console.error('[vendorPartialRefund] Email error:', emailErr);
+  }
+
+  res.status(200).json({
+    status: 'success',
+    message: `Partial refund of $${amount.toFixed(2)} issued successfully.`,
+    data: { bookingId, refundId: refund.id, refundAmount: amount }
+  });
+});
+
 module.exports = {
     getAllpaymentsforVendor,
     getAllPayments,
@@ -590,5 +680,6 @@ module.exports = {
     getEscrowStatus,
     fileDispute,
     resolveDispute,
-    adminReleaseEscrow
+    adminReleaseEscrow,
+    vendorPartialRefund
 };

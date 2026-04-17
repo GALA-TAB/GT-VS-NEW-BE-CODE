@@ -7,7 +7,8 @@ const {
     getEscrowStatus,
     fileDispute,
     resolveDispute,
-    adminReleaseEscrow
+    adminReleaseEscrow,
+    vendorPartialRefund
 } = require('../controllers/paymentController');
 const requireAuth = require('../middlewares/requireAuth');
 const restrictTo = require('../middlewares/restrictTo');
@@ -30,5 +31,8 @@ router.post('/dispute/:bookingId/resolve', requireAuth, restrictTo(['admin']), r
 
 // POST /api/payment/escrow/:bookingId/release   → admin manually releases escrow
 router.post('/escrow/:bookingId/release', requireAuth, restrictTo(['admin']), adminReleaseEscrow);
+
+// POST /api/payment/vendor-refund/:bookingId    → vendor issues partial refund
+router.post('/vendor-refund/:bookingId', requireAuth, restrictTo(['vendor']), vendorPartialRefund);
 
 module.exports = router;
