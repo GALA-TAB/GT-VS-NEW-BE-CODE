@@ -198,7 +198,7 @@ const serviceupdateSchema = Joi.object({
         "any.required": "offDayPricing is required."
     }),
 
-    status: Joi.string().valid("Available", "Booked", "InProgress", "Active", "Cancelled", "ActionRequiredListing").messages({
+    status: Joi.string().valid("Available", "Booked", "InProgress", "Active", "Inactive", "Cancelled", "ActionRequiredListing").messages({
         "string.valid": "status must be string",
         "any.required": "statusis required."
     }),
