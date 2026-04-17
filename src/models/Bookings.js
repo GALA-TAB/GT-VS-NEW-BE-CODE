@@ -37,7 +37,7 @@ const BookingSchema = new Schema(
     paymentIntentId: {
       type: String,
       trim: true,
-      required: true
+      default: null
     },
     status: {
       type: String,
