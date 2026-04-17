@@ -93,13 +93,7 @@ const sendNotification = async ({ userId, title, message, type, fortype, permiss
       return 0;
     }
 
-    await sendEmail(user, title, message);
-
-    // if (user.contact) {
-    //   const smsResponse = await sendTwilioSms(user.contact, message);
-    //   console.log('SMS sent:', smsResponse);
-    // }
-
+    // Save in-app notification FIRST so it persists even if email/socket fail
     const newNotification = new Notification({
       userId: user._id,
       title,
@@ -110,15 +104,27 @@ const sendNotification = async ({ userId, title, message, type, fortype, permiss
 
     await newNotification.save();
 
+    // Emit via socket (real-time push)
     const room = io.sockets.adapter.rooms.get(user._id.toString());
     if (room) {
       newNotification.isDelivered = true;
       await newNotification.save();
       io.to(user._id.toString()).emit('notification', newNotification);
     }
+
+    // Send email last — failure must not block notification delivery
+    try {
+      await sendEmail(user, title, message);
+    } catch (emailErr) {
+      console.error('Email send failed (notification still saved):', emailErr.message);
+    }
+
+    // if (user.contact) {
+    //   const smsResponse = await sendTwilioSms(user.contact, message);
+    //   console.log('SMS sent:', smsResponse);
+    // }
   } catch (error) {
     console.error('Notification middleware error:', error);
-    throw error;
   }
 };
 

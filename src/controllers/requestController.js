@@ -715,9 +715,9 @@ const getAllBookings = catchAsync(async (req, res, next) => {
     Booking.aggregate([...query, { $count: 'total' }]),
     Booking.aggregate([
       ...query,
+      { $sort: { createdAt: -1 } },
       { $skip: (page - 1) * limit },
-      { $limit: limit },
-      { $sort: { createdAt: -1 } }
+      { $limit: limit }
     ])
   ]);
 
@@ -768,9 +768,9 @@ const getAllBookingsForVendorService = catchAsync(async (req, res, next) => {
     Booking.aggregate([...query, { $count: 'total' }]),
     Booking.aggregate([
       ...query,
+      { $sort: { createdAt: -1 } },
       { $skip: (page - 1) * limit },
-      { $limit: limit },
-      { $sort: { createdAt: -1 } }
+      { $limit: limit }
     ])
   ]);
 
@@ -824,9 +824,9 @@ const getAllBookingsForCustomer = catchAsync(async (req, res, next) => {
   // Fetch bookings with pagination and population
   const bookings = await Booking.aggregate([
     ...query,
+    { $sort: { createdAt: -1 } },
     { $skip: (page - 1) * limit },
-    { $limit: limit },
-    { $sort: { createdAt: -1 } }
+    { $limit: limit }
   ]);
 
   return res.status(200).json({
