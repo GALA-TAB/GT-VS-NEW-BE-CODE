@@ -1,4 +1,6 @@
 const Wallet = require('../models/Wallet');
+const User = require('../models/users/User');
+const APIFeatures = require('../utils/apiFeatures');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 
@@ -319,3 +321,191 @@ exports.deactivateFundMeLink = catchAsync(async (req, res, next) => {
     message: 'Fund link deactivated',
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────
+// GET /api/wallet/admin/all
+// Admin: list all user wallets with balances (paginated, searchable)
+// ─────────────────────────────────────────────────────────────────────
+exports.getAllWallets = catchAsync(async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const skip = (page - 1) * limit;
+  const search = req.query.search || '';
+  const role = req.query.role || '';
+
+  // Build user match filter
+  const userMatch = {};
+  if (search) {
+    userMatch.$or = [
+      { firstName: { $regex: search, $options: 'i' } },
+      { lastName: { $regex: search, $options: 'i' } },
+      { email: { $regex: search, $options: 'i' } },
+    ];
+  }
+  if (role) {
+    userMatch.role = role;
+  }
+
+  const pipeline = [
+    {
+      $lookup: {
+        from: 'users',
+        localField: 'user',
+        foreignField: '_id',
+        as: 'userDoc',
+      },
+    },
+    { $unwind: { path: '$userDoc', preserveNullAndEmptyArrays: false } },
+    ...(Object.keys(userMatch).length > 0 ? [{ $match: { 'userDoc': userMatch } }] : []),
+    {
+      $addFields: {
+        transactionCount: { $size: '$transactions' },
+        lastTransaction: { $arrayElemAt: [{ $sortArray: { input: '$transactions', sortBy: { createdAt: -1 } } }, 0] },
+      },
+    },
+    {
+      $project: {
+        _id: 1,
+        balance: 1,
+        currency: 1,
+        transactionCount: 1,
+        'lastTransaction.type': 1,
+        'lastTransaction.amount': 1,
+        'lastTransaction.createdAt': 1,
+        'userDoc._id': 1,
+        'userDoc.firstName': 1,
+        'userDoc.lastName': 1,
+        'userDoc.email': 1,
+        'userDoc.role': 1,
+        'userDoc.profileImage': 1,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    },
+    { $sort: { balance: -1 } },
+  ];
+
+  const countPipeline = [...pipeline, { $count: 'total' }];
+  const dataPipeline = [...pipeline, { $skip: skip }, { $limit: limit }];
+
+  const [countResult, wallets] = await Promise.all([
+    Wallet.aggregate(countPipeline),
+    Wallet.aggregate(dataPipeline),
+  ]);
+
+  const total = countResult.length > 0 ? countResult[0].total : 0;
+
+  // Aggregate totals
+  const totalsPipeline = [
+    {
+      $group: {
+        _id: null,
+        totalBalance: { $sum: '$balance' },
+        totalWallets: { $sum: 1 },
+      },
+    },
+  ];
+  const totalsResult = await Wallet.aggregate(totalsPipeline);
+
+  res.status(200).json({
+    status: 'success',
+    data: wallets,
+    results: wallets.length,
+    total,
+    totalBalance: totalsResult.length > 0 ? totalsResult[0].totalBalance : 0,
+    totalWallets: totalsResult.length > 0 ? totalsResult[0].totalWallets : 0,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// GET /api/wallet/admin/:userId
+// Admin: view a specific user's wallet details
+// ─────────────────────────────────────────────────────────────────────
+exports.getWalletByUserId = catchAsync(async (req, res, next) => {
+  const { userId } = req.params;
+
+  const wallet = await Wallet.findOne({ user: userId })
+    .populate('user', 'firstName lastName email role profileImage');
+
+  if (!wallet) {
+    return next(new AppError('No wallet found for this user', 404));
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      _id: wallet._id,
+      user: wallet.user,
+      balance: wallet.balance,
+      currency: wallet.currency,
+      transactions: wallet.transactions.sort((a, b) => b.createdAt - a.createdAt),
+      fundMeLinks: wallet.fundMeLinks,
+    },
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// POST /api/wallet/admin/:userId/credit
+// Admin: credit (add) or debit (subtract) a user's wallet
+// ─────────────────────────────────────────────────────────────────────
+exports.adminAdjustWallet = catchAsync(async (req, res, next) => {
+  const { userId } = req.params;
+  const { amount, description, type } = req.body;
+
+  if (!amount || amount <= 0) {
+    return next(new AppError('Amount must be positive', 400));
+  }
+  if (!type || !['credit', 'debit'].includes(type)) {
+    return next(new AppError('Type must be "credit" or "debit"', 400));
+  }
+
+  const user = await User.findById(userId);
+  if (!user) {
+    return next(new AppError('User not found', 404));
+  }
+
+  const wallet = await getOrCreateWallet(userId);
+
+  if (type === 'debit' && wallet.balance < amount) {
+    return next(new AppError('Insufficient wallet balance for debit', 400));
+  }
+
+  if (type === 'credit') {
+    wallet.balance += amount;
+  } else {
+    wallet.balance -= amount;
+  }
+
+  wallet.transactions.push({
+    type: type === 'credit' ? 'deposit' : 'payment',
+    amount: type === 'credit' ? amount : -amount,
+    description: description || `Admin ${type} adjustment`,
+  });
+  await wallet.save();
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      balance: wallet.balance,
+      userId,
+    },
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// POST /api/wallet/vendor/credit-earnings
+// System: credit vendor wallet when escrow is released
+// (called internally from payout cron or admin release)
+// ─────────────────────────────────────────────────────────────────────
+exports.creditVendorWallet = async (vendorId, amount, bookingId, description) => {
+  const wallet = await getOrCreateWallet(vendorId);
+  wallet.balance += amount;
+  wallet.transactions.push({
+    type: 'deposit',
+    amount,
+    description: description || 'Payout from completed booking',
+    bookingId: bookingId || null,
+  });
+  await wallet.save();
+  return wallet;
+};

@@ -10,6 +10,7 @@ const catchAsync = require('../utils/catchAsync');
 const Email = require('../utils/email');
 const { createStripeOnBoardingLink, createStripeExpressAccount, receiveAccount } = require('../utils/stripe-utils/connect-accounts.util');
 const { maintoConnect } = require('../utils/stripe-utils/stripe-transfer.util');
+const { creditVendorWallet } = require('./walletController');
 const getAllpaymentsforVendor = catchAsync(async (req, res, next) => {
 
     const query = {
@@ -485,6 +486,13 @@ const resolveDispute = catchAsync(async (req, res, next) => {
     payment.escrowStatus = 'released';
     payment.status = 'completed';
     booking.paymentStatus = true;
+
+    // Credit vendor wallet
+    try {
+      await creditVendorWallet(vendor._id, payment.amount, booking._id, 'Dispute resolved - funds released');
+    } catch (walletErr) {
+      console.error('[resolveDispute] Failed to credit vendor wallet:', walletErr);
+    }
   } else {
     // Refund to customer (full or partial)
     const chargeId = payment.stripeChargeId;
@@ -559,6 +567,13 @@ const adminReleaseEscrow = catchAsync(async (req, res, next) => {
 
   booking.paymentStatus = true;
   await booking.save();
+
+  // Credit vendor wallet
+  try {
+    await creditVendorWallet(vendor._id, payment.amount, bookingId, 'Admin early release of delayed payout');
+  } catch (walletErr) {
+    console.error('[adminReleaseEscrow] Failed to credit vendor wallet:', walletErr);
+  }
 
   res.status(200).json({
     status: 'success',

@@ -7,9 +7,18 @@ const {
   getFundMeLink,
   contributeFundMe,
   deactivateFundMeLink,
+  getAllWallets,
+  getWalletByUserId,
+  adminAdjustWallet,
 } = require('../controllers/walletController');
 const requireAuth = require('../middlewares/requireAuth');
+const restrictTo = require('../middlewares/restrictTo');
 const router = express.Router();
+
+// Admin — wallet management
+router.get('/admin/all', requireAuth, restrictTo(['admin']), getAllWallets);
+router.get('/admin/:userId', requireAuth, restrictTo(['admin']), getWalletByUserId);
+router.post('/admin/:userId/adjust', requireAuth, restrictTo(['admin']), adminAdjustWallet);
 
 // Authenticated — wallet owner
 router.get('/', requireAuth, getWallet);

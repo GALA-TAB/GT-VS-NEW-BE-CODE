@@ -5,6 +5,7 @@ const Booking = require('../models/Bookings');
 const { maintoConnect } = require('./stripe-utils/stripe-transfer.util');
 const { receiveAccount } = require('./stripe-utils/connect-accounts.util');
 const sendNotification = require('./storeNotification');
+const { creditVendorWallet } = require('../controllers/walletController');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Escrow Release Cron  (runs every minute)
@@ -75,6 +76,18 @@ cron.schedule('* * * * *', async () => {
 
           booking.paymentStatus = true;
           await booking.save();
+
+          // Credit vendor wallet with earnings
+          try {
+            await creditVendorWallet(
+              payment.vendorId._id,
+              payment.amount,
+              booking._id,
+              'Payout for booking #' + booking._id + ' ("' + (payment.booking?.service?.title || '') + '")'
+            );
+          } catch (walletErr) {
+            console.error('[PayoutCrone] Failed to credit vendor wallet:', walletErr);
+          }
 
           sendNotification({
             userId: payment.vendorId._id,
