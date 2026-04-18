@@ -99,6 +99,8 @@ const createBooking = catchAsync(async (req, res, next) => {
     guestsOfHonor,
     signatureImage,
     initialsImage,
+    idFrontImage,
+    idBackImage,
     agreementSnapshot,
   } = req.body;
 
@@ -331,6 +333,8 @@ const createBooking = catchAsync(async (req, res, next) => {
         vendor: listingExists?.vendorId?._id,
         signatureImage,
         initialsImage,
+        idFrontImage: idFrontImage || '',
+        idBackImage: idBackImage || '',
         agreementSnapshot: agreementSnapshot || {
           serviceName: listingExists?.title,
           vendorName: `${listingExists?.vendorId?.firstName || ''} ${listingExists?.vendorId?.lastName || ''}`.trim(),

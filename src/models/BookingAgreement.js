@@ -34,6 +34,14 @@ const BookingAgreementSchema = new Schema(
       required: true,
     },
 
+    // Government-issued ID images (base64)
+    idFrontImage: {
+      type: String,
+    },
+    idBackImage: {
+      type: String,
+    },
+
     // Agreement snapshot — what the customer agreed to at the time of booking
     agreementSnapshot: {
       serviceName: String,
