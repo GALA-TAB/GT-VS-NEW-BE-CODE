@@ -44,3 +44,4 @@ exports.venueDetectionRoute = require('./venueDetectionRoute');
 exports.sharedCartPaymentRoute = require('./sharedCartPaymentRoute');
 exports.businessCertificateRoute = require('./businessCertificateRoute');
 exports.walletRoute = require('./walletRoute');
+exports.bookingAgreementRoute = require('./bookingAgreementRoute');

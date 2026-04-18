@@ -184,36 +184,14 @@ const ServiceListingSchema = new mongoose.Schema(
         },
         price: {
           type: Number
-        },
-        extendsNextDay: {
-          type: Boolean,
-          default: false
         }
       }
     ],
     pricingModel: {
       type: String,
-      enum: ['hourly', 'daily', 'multiHour'],
+      enum: ['hourly', 'daily'],
       trim: true
     },
-    hourlyPackages: [
-      {
-        hours: {
-          type: Number,
-          required: true,
-          min: 1
-        },
-        price: {
-          type: Number,
-          required: true,
-          min: 0
-        },
-        label: {
-          type: String,
-          trim: true
-        }
-      }
-    ],
     offDayPricing: {
       type: Boolean,
       default: false
@@ -235,16 +213,6 @@ const ServiceListingSchema = new mongoose.Schema(
         description:{
            type: String, 
           trim: true
-        },
-        pricingType: {
-          type: String,
-          enum: ['flat', 'quantity'],
-          default: 'flat'
-        },
-        quantity: {
-          type: Number,
-          default: 1,
-          min: 1
         }
       }
     ],
@@ -290,18 +258,6 @@ const ServiceListingSchema = new mongoose.Schema(
       type: String,
       trim: true
     },
-    clauses: [
-      {
-        title: {
-          type: String,
-          trim: true
-        },
-        description: {
-          type: String,
-          trim: true
-        }
-      }
-    ],
     completed: {
       type: Boolean,
       default: false

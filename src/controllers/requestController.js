@@ -37,6 +37,7 @@ const Discount = require('../models/PromoDiscountCode');
 const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDeleteFilter');
 const { moderateText } = require('../utils/mediaModeration');
 const Wallet = require('../models/Wallet');
+const BookingAgreement = require('../models/BookingAgreement');
 
 const filter = (param) => {
   const { status, startDate, endDate, cancelRequest } = param;
@@ -95,7 +96,10 @@ const createBooking = catchAsync(async (req, res, next) => {
     addOnServices,
     timezone,
     eventType,
-    guestsOfHonor
+    guestsOfHonor,
+    signatureImage,
+    initialsImage,
+    agreementSnapshot,
   } = req.body;
 
   const isWalletPayment = paymentSource === 'wallet';
@@ -124,7 +128,7 @@ const createBooking = catchAsync(async (req, res, next) => {
     return next(new AppError('Invalid request', 400, { errorFields }));
   }
 
-  const listingExists = await Listing.findById(service).populate('vendorId', 'SleepMode _id');
+  const listingExists = await Listing.findById(service).populate('vendorId', 'SleepMode _id firstName lastName fullName');
   if (!listingExists) {
     return next(new AppError('Listing Not Found', 404));
   }
@@ -316,6 +320,38 @@ const createBooking = catchAsync(async (req, res, next) => {
     guestsOfHonor: guestsOfHonor || []
   });
   res.locals.dataId = booking._id; // Store the ID of the created booking in res.locals
+
+  // Save agreement with signature if provided
+  if (signatureImage && initialsImage) {
+    try {
+      await BookingAgreement.create({
+        booking: booking._id,
+        user: userId,
+        service,
+        vendor: listingExists?.vendorId?._id,
+        signatureImage,
+        initialsImage,
+        agreementSnapshot: agreementSnapshot || {
+          serviceName: listingExists?.title,
+          vendorName: `${listingExists?.vendorId?.firstName || ''} ${listingExists?.vendorId?.lastName || ''}`.trim(),
+          checkIn,
+          checkOut,
+          guests,
+          totalPrice: finalTotalPrice,
+          addOnServices,
+          discountValue: discountValue || 0,
+          cancellationPolicy: listingExists?.cancellationPolicy || '',
+          vendorRules: listingExists?.rules || '',
+          paymentMethod: isWalletPayment ? 'wallet' : 'card',
+        },
+        ipAddress: req.ip || req.headers['x-forwarded-for'] || req.connection?.remoteAddress,
+        userAgent: req.headers['user-agent'],
+      });
+    } catch (agreementError) {
+      console.error('Failed to save booking agreement:', agreementError.message);
+      // Don't block the booking — agreement save failure is non-critical
+    }
+  }
 
   console.log(paymentIntent, 'paymentIntent created successfully');
   if (isWalletPayment || (instantBookingCheck === true && paymentIntent?.status === 'succeeded')) {
