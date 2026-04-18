@@ -672,6 +672,114 @@ const vendorPartialRefund = catchAsync(async (req, res, next) => {
   });
 });
 
+// GET /api/payment/customer — customer's own payment history
+const getCustomerPayments = catchAsync(async (req, res, next) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const skip = (page - 1) * limit;
+  const userId = req.user._id;
+
+  const pipeline = [
+    // Join booking to get the user who made it
+    {
+      $addFields: {
+        bookingObjId: {
+          $cond: {
+            if: { $eq: [{ $type: '$booking' }, 'string'] },
+            then: { $toObjectId: '$booking' },
+            else: '$booking'
+          }
+        }
+      }
+    },
+    {
+      $lookup: {
+        from: 'bookings',
+        localField: 'bookingObjId',
+        foreignField: '_id',
+        as: 'bookingDoc'
+      }
+    },
+    { $unwind: { path: '$bookingDoc', preserveNullAndEmptyArrays: false } },
+    // Only this customer's bookings
+    { $match: { 'bookingDoc.user': userId } },
+    // Vendor lookup
+    {
+      $lookup: {
+        from: 'users',
+        localField: 'vendorId',
+        foreignField: '_id',
+        as: 'vendor'
+      }
+    },
+    { $unwind: { path: '$vendor', preserveNullAndEmptyArrays: true } },
+    // Service lookup
+    {
+      $lookup: {
+        from: 'servicelistings',
+        localField: 'bookingDoc.service',
+        foreignField: '_id',
+        as: 'serviceDoc'
+      }
+    },
+    { $unwind: { path: '$serviceDoc', preserveNullAndEmptyArrays: true } },
+    {
+      $addFields: {
+        'bookingDoc.service': {
+          _id: '$serviceDoc._id',
+          title: '$serviceDoc.title',
+          generatedTitle: '$serviceDoc.generatedTitle'
+        },
+        vendorName: {
+          $concat: [
+            { $ifNull: ['$vendor.firstName', ''] },
+            ' ',
+            { $ifNull: ['$vendor.lastName', ''] }
+          ]
+        }
+      }
+    },
+    { $project: { bookingObjId: 0, serviceDoc: 0 } }
+  ];
+
+  // escrowStatus filter
+  if (req.query.escrowStatus) {
+    pipeline.push({ $match: { escrowStatus: req.query.escrowStatus } });
+  }
+
+  // Search filter
+  if (req.query.search) {
+    const searchRegex = new RegExp(req.query.search, 'i');
+    pipeline.push({
+      $match: {
+        $or: [
+          { vendorName: searchRegex },
+          { 'bookingDoc.service.title': searchRegex },
+          { 'bookingDoc.service.generatedTitle': searchRegex }
+        ]
+      }
+    });
+  }
+
+  const totalResult = await Payments.aggregate([...pipeline, { $count: 'total' }]);
+  const total = totalResult[0]?.total || 0;
+
+  const payments = await Payments.aggregate([
+    ...pipeline,
+    { $sort: { createdAt: -1 } },
+    { $skip: skip },
+    { $limit: limit }
+  ]);
+
+  res.status(200).json({
+    status: 'success',
+    results: payments.length,
+    totalPayments: total,
+    totalPages: Math.ceil(total / limit),
+    data: payments
+  });
+});
+
 module.exports = {
     getAllpaymentsforVendor,
     getAllPayments,
@@ -681,5 +789,6 @@ module.exports = {
     fileDispute,
     resolveDispute,
     adminReleaseEscrow,
-    vendorPartialRefund
+    vendorPartialRefund,
+    getCustomerPayments
 };
