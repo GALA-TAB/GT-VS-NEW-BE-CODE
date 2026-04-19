@@ -210,10 +210,23 @@ const createBooking = catchAsync(async (req, res, next) => {
   // Get or create a Stripe customer
   let { stripeCustomerId } = user;
   if (!isWalletPayment) {
+    // Verify existing Stripe customer is still valid, or create a new one
+    if (stripeCustomerId) {
+      try {
+        const existing = await require('../utils/stripe-utils/customers.utils').getCustomer({ customerId: stripeCustomerId });
+        if (existing.deleted) {
+          stripeCustomerId = null; // Customer was deleted in Stripe, recreate
+        }
+      } catch (err) {
+        console.error('Existing Stripe customer invalid, will recreate:', err.message);
+        stripeCustomerId = null;
+      }
+    }
+
     if (!stripeCustomerId) {
       const customer = await createCustomer({
         email: user.email,
-        name: user.name
+        name: `${user.firstName || ''} ${user.lastName || ''}`.trim()
       });
 
       stripeCustomerId = customer.id;
