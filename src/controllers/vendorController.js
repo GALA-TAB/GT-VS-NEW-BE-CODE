@@ -77,7 +77,7 @@ const stripeConnect = catchAsync(async (req, res, next) => {
     } else {
       accountId = await createStripeExpressAccount({
         email: req.user.email,
-        country: req.user?.countryName,
+        country: 'US',
         userId: req.user._id
       });
     }

@@ -72,6 +72,8 @@ services:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      - key: STRIPE_REFRESH_URL
+        value: https://gt-vs-new-fe-code.vercel.app/vendor-dashboard/payments-and-Payouts
 
       # ── Google OAuth ─────────────────────────────────────────────────────────
       - key: GOOGLE_CLIENT_ID
