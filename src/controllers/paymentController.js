@@ -495,6 +495,15 @@ const resolveDispute = catchAsync(async (req, res, next) => {
     }
   } else {
     // Refund to customer (full or partial)
+    if (resolution === 'partial_refund') {
+      const parsedRefund = Number(refundAmount);
+      if (!refundAmount || isNaN(parsedRefund) || parsedRefund <= 0) {
+        return next(new AppError('refundAmount must be greater than 0 for a partial refund.', 400));
+      }
+      if (parsedRefund > payment.amount) {
+        return next(new AppError(`refundAmount ($${parsedRefund.toFixed(2)}) cannot exceed the escrow amount ($${payment.amount.toFixed(2)}).`, 400));
+      }
+    }
     const chargeId = payment.stripeChargeId;
     if (chargeId) {
       const refundParams = { charge: chargeId };
