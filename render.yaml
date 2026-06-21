@@ -4,6 +4,8 @@ services:
     runtime: node
     region: oregon
     plan: free
+    branch: main
+    autoDeploy: yes
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /api/health
