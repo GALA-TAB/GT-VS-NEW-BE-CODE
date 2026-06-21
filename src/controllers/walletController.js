@@ -337,13 +337,13 @@ exports.getAllWallets = catchAsync(async (req, res) => {
   const userMatch = {};
   if (search) {
     userMatch.$or = [
-      { firstName: { $regex: search, $options: 'i' } },
-      { lastName: { $regex: search, $options: 'i' } },
-      { email: { $regex: search, $options: 'i' } },
+      { 'userDoc.firstName': { $regex: search, $options: 'i' } },
+      { 'userDoc.lastName': { $regex: search, $options: 'i' } },
+      { 'userDoc.email': { $regex: search, $options: 'i' } },
     ];
   }
   if (role) {
-    userMatch.role = role;
+    userMatch['userDoc.role'] = role;
   }
 
   const pipeline = [
@@ -356,7 +356,7 @@ exports.getAllWallets = catchAsync(async (req, res) => {
       },
     },
     { $unwind: { path: '$userDoc', preserveNullAndEmptyArrays: false } },
-    ...(Object.keys(userMatch).length > 0 ? [{ $match: { 'userDoc': userMatch } }] : []),
+    ...(Object.keys(userMatch).length > 0 ? [{ $match: userMatch }] : []),
     {
       $addFields: {
         transactionCount: { $size: '$transactions' },
