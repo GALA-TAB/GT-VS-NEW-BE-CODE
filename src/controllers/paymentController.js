@@ -19,6 +19,20 @@ const getAllpaymentsforVendor = catchAsync(async (req, res, next) => {
     if (req.query.status) {
         query.status = req.query.status;
     }
+    // ── escrowStatus filter ──────────────────────────────────────────────
+    if (req.query.escrowStatus) {
+        if (req.query.escrowStatus === 'pending') {
+            // "Pending" covers records where escrowStatus is literally 'pending'
+            // OR null/missing (legacy payments created before the escrow system).
+            query.$or = [
+                { escrowStatus: 'pending' },
+                { escrowStatus: null },
+                { escrowStatus: { $exists: false } }
+            ];
+        } else {
+            query.escrowStatus = req.query.escrowStatus;
+        }
+    }
     const apiFeature = new APIFeatures(Payments.find(query), req.query).paginate().sort();
 
     const [total, payments] = await Promise.all([
