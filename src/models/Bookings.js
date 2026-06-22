@@ -1,7 +1,22 @@
 const { Schema, model } = require('mongoose');
+const crypto = require('crypto');
+
+const generateBookingRef = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const suffix = crypto.randomBytes(3).toString('hex').toUpperCase(); // 6 hex chars
+  return `GT-${year}${month}-${suffix}`;
+};
 
 const BookingSchema = new Schema(
   {
+    bookingRef: {
+      type: String,
+      unique: true,
+      sparse: true,
+      trim: true
+    },
     user: {
       type: Schema.Types.ObjectId,
       ref: 'User',
@@ -115,6 +130,14 @@ const BookingSchema = new Schema(
   },
   { timestamps: true }
 );
+
+// Auto-generate bookingRef for new documents
+BookingSchema.pre('validate', function (next) {
+  if (this.isNew && !this.bookingRef) {
+    this.bookingRef = generateBookingRef();
+  }
+  next();
+});
 
 // Index for sorting and filtering bookings efficiently
 BookingSchema.index({
