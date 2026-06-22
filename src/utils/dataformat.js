@@ -614,7 +614,8 @@ const bookingformat = [
       extensionrequest: 1,
       addOnServices: '$servicePrice',
       createdAt: 1,
-      updatedAt: 1
+      updatedAt: 1,
+      bookingRef: 1
     }
   }
 ];
