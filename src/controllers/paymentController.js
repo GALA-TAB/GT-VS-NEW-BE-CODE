@@ -162,7 +162,21 @@ const getAllPayments = catchAsync(async (req, res, next) => {
 
     // ── escrowStatus filter (new) ────────────────────────────────────────
     if (req.query.escrowStatus) {
-        pipeline.push({ $match: { escrowStatus: req.query.escrowStatus } });
+        if (req.query.escrowStatus === 'pending') {
+            // "Pending" in the UI means escrowStatus is literally 'pending',
+            // OR the field is null/missing (legacy records that pre-date escrow).
+            pipeline.push({
+                $match: {
+                    $or: [
+                        { escrowStatus: 'pending' },
+                        { escrowStatus: null },
+                        { escrowStatus: { $exists: false } }
+                    ]
+                }
+            });
+        } else {
+            pipeline.push({ $match: { escrowStatus: req.query.escrowStatus } });
+        }
     }
 
     // ── Legacy status filter ─────────────────────────────────────────────
