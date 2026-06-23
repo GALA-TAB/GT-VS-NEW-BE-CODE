@@ -218,8 +218,7 @@ const serviceupdateSchema = Joi.object({
                 "number.min": "Quantity must be at least 1.",
                 "number.integer": "Quantity must be a whole number."
             }),
-            taxable: Joi.boolean().default(false),
-            taxRate: Joi.number().min(0).allow(null).default(null)
+
         })
     ),
     cancellationPolicy: Joi.string().messages({

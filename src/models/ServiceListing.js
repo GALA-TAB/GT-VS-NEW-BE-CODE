@@ -217,14 +217,6 @@ const ServiceListingSchema = new mongoose.Schema(
         description:{
            type: String, 
           trim: true
-        },
-        taxable: {
-          type: Boolean,
-          default: false
-        },
-        taxRate: {
-          type: Number,
-          default: null
         }
       }
     ],
