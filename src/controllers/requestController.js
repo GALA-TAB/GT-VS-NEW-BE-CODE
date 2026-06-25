@@ -321,6 +321,11 @@ const createBooking = catchAsync(async (req, res, next) => {
     finalTotalPrice = paymentIntent.amount / 100;
   }
 
+  // ── Tax calculation (customer-facing breakdown, tax-inclusive) ──
+  const TAX_RATE = parseFloat(process.env.TAX_RATE || '8.875');
+  const taxAmount = parseFloat(((finalTotalPrice * TAX_RATE) / (100 + TAX_RATE)).toFixed(2));
+  const basePrice = parseFloat((finalTotalPrice - taxAmount).toFixed(2));
+
   const booking = await Booking.create({
     user: userId,
     service,
@@ -328,6 +333,9 @@ const createBooking = catchAsync(async (req, res, next) => {
     checkOut,
     guests,
     totalPrice: finalTotalPrice,
+    taxRate: TAX_RATE,
+    taxAmount,
+    basePrice,
     message,
     paymentIntentId: paymentIntent?.id || null,
     servicePrice: addOnServices,

@@ -45,6 +45,19 @@ const BookingSchema = new Schema(
       required: true,
       min: [0, 'Total price must be positive']
     },
+    // ── Tax breakdown (customer-facing only) ──────────────────────
+    taxRate: {
+      type: Number,
+      default: 0   // percentage, e.g. 8.875
+    },
+    taxAmount: {
+      type: Number,
+      default: 0   // dollar amount of tax extracted from totalPrice
+    },
+    basePrice: {
+      type: Number,
+      default: 0   // totalPrice minus taxAmount
+    },
     paymentStatus: {
       type: Boolean,
       default: false
