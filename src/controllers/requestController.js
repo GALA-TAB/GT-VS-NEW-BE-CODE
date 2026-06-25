@@ -2171,6 +2171,7 @@ const cancelExtensionRequest = catchAsync(async (req, res, next) => {
 });
 
 module.exports = {
+  createBooking,
   updateBookingRequestStatus,
   getAllBookings,
   getExtensionBooking,
