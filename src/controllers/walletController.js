@@ -7,12 +7,13 @@ const AppError = require('../utils/appError');
 const { STRIPE_SECRET_ACCESS_KEY } = process.env;
 const stripe = STRIPE_SECRET_ACCESS_KEY ? require('stripe')(STRIPE_SECRET_ACCESS_KEY) : null;
 
-// ─── Helper: get or create wallet ────────────────────────────────────
+// ─── Helper: get or create wallet (atomic upsert to avoid race conditions) ───
 const getOrCreateWallet = async (userId) => {
-  let wallet = await Wallet.findOne({ user: userId });
-  if (!wallet) {
-    wallet = await Wallet.create({ user: userId });
-  }
+  const wallet = await Wallet.findOneAndUpdate(
+    { user: userId },
+    { $setOnInsert: { user: userId } },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
   return wallet;
 };
 
