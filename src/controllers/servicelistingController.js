@@ -247,8 +247,8 @@ const getfilterquery = (params) => {
     matchStage['eventTypeData.name'] = { $regex: new RegExp(eventTypeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') };
   }
 
-  // Geospatial filter
-  const radiusInMeters = 5000;
+  // Geospatial filter — 5 miles radius
+  const radiusInMeters = 8047;
   const earthRadiusInMeters = 6378137;
 
   if (longitude && latitude) {
