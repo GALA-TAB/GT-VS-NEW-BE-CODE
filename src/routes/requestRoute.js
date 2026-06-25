@@ -13,6 +13,7 @@ const {
     refundAmount,
     extendBooking,
     acceptorRejectExtension,
+    cancelExtensionRequest,
     extensionsRequestForVendor,
     getBookingExtensionHistory,
     extensionsRequestForCustomer,
@@ -69,6 +70,7 @@ router.route('/:id')
 router.route('/:id/refunddata').get(requireAuth, restrictTo(["admin","vendor"]),subAuth, getRefundDataOfBooking).post(requireAuth, restrictTo(["admin","vendor"]),subAuth, refundAmount);
 router.route('/:bookingId/extend').post(requireAuth, restrictTo(["customer","admin","vendor"]), logActionMiddleware("Extend Booking","Booking"), extendBooking).get(requireAuth, restrictTo(["customer","admin","vendor"]), subAuth,getBookingExtensionHistory);
 router.route('/:extensionId/acceptorrejectextension').post(requireAuth, restrictTo(["vendor","admin","customer"]), logActionMiddleware("Accept or Reject Extension","Booking"), subAuth,acceptorRejectExtension);
+router.route('/:extensionId/cancelextension').post(requireAuth, restrictTo(["vendor","customer"]), logActionMiddleware("Cancel Extension Request","Booking"), cancelExtensionRequest);
 
 // Service address reveal — only confirmed booking customer can access
 router.route('/:bookingId/service-address')

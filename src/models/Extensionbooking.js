@@ -44,7 +44,7 @@ const ExtensionBookingSchema = new Schema(
     },
     request: {
       type: String,
-      enum: ['accept', 'reject', 'pending'],
+      enum: ['accept', 'reject', 'pending', 'cancelled'],
       default: 'pending'
     },
     servicePrice: [

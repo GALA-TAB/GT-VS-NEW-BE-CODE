@@ -2112,8 +2112,65 @@ const getBookingServiceAddress = catchAsync(async (req, res, next) => {
   });
 });
 
+const cancelExtensionRequest = catchAsync(async (req, res, next) => {
+  const { extensionId } = req.params;
+
+  const extensionRequest = await Extensionbooking.findById(extensionId)
+    .populate('vendorId')
+    .populate('customerId');
+
+  if (!extensionRequest) {
+    return next(new AppError('Extension request not found', 404));
+  }
+
+  // Only the requester can cancel their own request
+  if (extensionRequest.requestBy.toString() !== req.user._id.toString()) {
+    return next(new AppError('You can only cancel your own extension requests', 403));
+  }
+
+  if (extensionRequest.request !== 'pending') {
+    return next(new AppError('Only pending extension requests can be cancelled', 400));
+  }
+
+  // Cancel the Stripe payment intent if present
+  if (extensionRequest.paymentIntentId) {
+    await cancelPaymentIntent({ paymentIntentId: extensionRequest.paymentIntentId });
+  }
+
+  extensionRequest.request = 'cancelled';
+  await extensionRequest.save();
+
+  // Notify the other party
+  if (req.user.role === 'customer') {
+    sendNotification({
+      userId: extensionRequest.vendorId?._id,
+      title: 'Booking Extension Cancelled',
+      message: `${req.user.firstName} ${req.user.lastName} has cancelled their booking extension request`,
+      type: 'booking',
+      fortype: 'booking_extension_rejected',
+      permission: 'bookings',
+      linkUrl: `/vendor-dashboard/extend-requests`
+    });
+  } else if (req.user.role === 'vendor') {
+    sendNotification({
+      userId: extensionRequest.customerId?._id,
+      title: 'Booking Extension Cancelled',
+      message: `${req.user.firstName} ${req.user.lastName} has cancelled their booking extension request`,
+      type: 'booking',
+      fortype: 'booking_extension_rejected',
+      permission: 'bookings',
+      linkUrl: `/user-dashboard/user-booking?tab=5`
+    });
+  }
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Extension request cancelled successfully',
+    data: { extensionRequest }
+  });
+});
+
 module.exports = {
-  createBooking,
   updateBookingRequestStatus,
   getAllBookings,
   getExtensionBooking,
@@ -2129,6 +2186,7 @@ module.exports = {
   refundAmount,
   extendBooking,
   acceptorRejectExtension,
+  cancelExtensionRequest,
   extensionsRequestForVendor,
   extensionsRequestForCustomer,
   getBookingExtensionHistory,
