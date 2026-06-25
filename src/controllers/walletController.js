@@ -1,4 +1,5 @@
 const Wallet = require('../models/Wallet');
+const crypto = require('crypto');
 const User = require('../models/users/User');
 const APIFeatures = require('../utils/apiFeatures');
 const catchAsync = require('../utils/catchAsync');
@@ -140,17 +141,30 @@ exports.createFundMeLink = catchAsync(async (req, res, next) => {
     return next(new AppError('Target amount must be positive', 400));
   }
 
-  const wallet = await getOrCreateWallet(req.user._id);
+  // Generate token here so we can find the link after the atomic push
+  const token = crypto.randomBytes(24).toString('hex');
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
-  wallet.fundMeLinks.push({
-    title,
-    description: description || '',
-    targetAmount,
-    cartItems: cartItems || [],
-  });
-  await wallet.save();
+  // Fully atomic: upsert wallet + push new fund link in one operation
+  const wallet = await Wallet.findOneAndUpdate(
+    { user: req.user._id },
+    {
+      $setOnInsert: { user: req.user._id },
+      $push: {
+        fundMeLinks: {
+          token,
+          title,
+          description: description || '',
+          targetAmount,
+          cartItems: cartItems || [],
+          expiresAt,
+        },
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
 
-  const link = wallet.fundMeLinks[wallet.fundMeLinks.length - 1];
+  const link = wallet.fundMeLinks.find((l) => l.token === token);
 
   res.status(201).json({
     status: 'success',
