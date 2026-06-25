@@ -289,25 +289,31 @@ const createBooking = catchAsync(async (req, res, next) => {
     totalPriceforConfirm -= discountValue;
   }
 
+  // ── Tax calculation (tax added on top of service price) ──
+  const TAX_RATE = parseFloat(process.env.TAX_RATE || '8.875');
+  const basePrice = totalPriceforConfirm;
+  const taxAmount = parseFloat((basePrice * TAX_RATE / 100).toFixed(2));
+  const totalWithTax = parseFloat((basePrice + taxAmount).toFixed(2));
+
   let paymentIntent = null;
-  let finalTotalPrice = totalPriceforConfirm;
+  let finalTotalPrice = totalWithTax;
 
   if (isWalletPayment) {
     // ── Wallet payment path ──
     const wallet = await Wallet.findOne({ user: userId });
-    if (!wallet || wallet.balance < totalPriceforConfirm) {
+    if (!wallet || wallet.balance < totalWithTax) {
       return next(new AppError('Insufficient wallet balance', 400));
     }
-    wallet.balance -= totalPriceforConfirm;
+    wallet.balance -= totalWithTax;
     wallet.transactions.push({
       type: 'payment',
-      amount: -totalPriceforConfirm,
+      amount: -totalWithTax,
       description: `Booking payment for ${listingExists.title || 'service'}`,
     });
     await wallet.save();
   } else {
     // ── Card payment path (existing Stripe flow) ──
-    const paymentAmount = Math.round(totalPriceforConfirm * 100);
+    const paymentAmount = Math.round(totalWithTax * 100);
     const currency = 'usd';
     const paymentMethodId = paymentMethodid;
     const customerId = stripeCustomerId;
@@ -320,11 +326,6 @@ const createBooking = catchAsync(async (req, res, next) => {
     });
     finalTotalPrice = paymentIntent.amount / 100;
   }
-
-  // ── Tax calculation (customer-facing breakdown, tax-inclusive) ──
-  const TAX_RATE = parseFloat(process.env.TAX_RATE || '8.875');
-  const taxAmount = parseFloat(((finalTotalPrice * TAX_RATE) / (100 + TAX_RATE)).toFixed(2));
-  const basePrice = parseFloat((finalTotalPrice - taxAmount).toFixed(2));
 
   const booking = await Booking.create({
     user: userId,
