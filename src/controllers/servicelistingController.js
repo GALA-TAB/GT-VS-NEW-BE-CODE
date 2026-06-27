@@ -2137,15 +2137,24 @@ const VerifyServiceListing = catchAsync(async (req, res, next) => {
 /**
  * GET /servicelisting/by-status
  * Returns listings filtered by VerificationStatus with appropriate sorting.
- * Query: ?status=verified|pending|notVerified&page=1&limit=10&keyword=
+ * Query: ?status=verified|pending|notVerified&page=1&limit=10&keyword=&serviceTypeIds=id1&serviceTypeIds=id2&startDate=&endDate=
  */
 const getServiceListingsByStatus = catchAsync(async (req, res) => {
   const {
     status: verificationStatus = 'verified',
     page = 1,
     limit = 10,
-    keyword
+    keyword,
+    startDate,
+    endDate
   } = req.query;
+
+  // serviceTypeIds may come as a single string or an array
+  const serviceTypeIds = req.query.serviceTypeIds
+    ? Array.isArray(req.query.serviceTypeIds)
+      ? req.query.serviceTypeIds
+      : [req.query.serviceTypeIds]
+    : null;
 
   const pageNum = parseInt(page, 10);
   const limitNum = parseInt(limit, 10);
@@ -2174,6 +2183,24 @@ const getServiceListingsByStatus = catchAsync(async (req, res) => {
         { generatedTitle: { $regex: keyword, $options: 'i' } }
       ]
     });
+  }
+
+  // Filter by service type IDs
+  if (serviceTypeIds && serviceTypeIds.length > 0) {
+    const validIds = serviceTypeIds
+      .filter(id => mongoose.Types.ObjectId.isValid(id))
+      .map(id => new mongoose.Types.ObjectId(id));
+    if (validIds.length > 0) {
+      matchStage.$and.push({ serviceTypeId: { $in: validIds } });
+    }
+  }
+
+  // Filter by date range (createdAt)
+  if (startDate || endDate) {
+    const dateFilter = {};
+    if (startDate) dateFilter.$gte = new Date(startDate);
+    if (endDate) dateFilter.$lte = new Date(endDate);
+    matchStage.$and.push({ createdAt: dateFilter });
   }
 
   // Sorting: verified → newest verified first, pending → oldest first, notVerified → newest first
