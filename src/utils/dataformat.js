@@ -407,7 +407,8 @@ const servicelistingFormat = [
       sumofserviceDayPrice: 1,
       minServiceDayPrice: 1,
       bufferTimeUnit: 1,
-      bufferTime: 1
+      bufferTime: 1,
+      boost: 1
     }
   }
 ];
