@@ -300,6 +300,36 @@ const ServiceListingSchema = new mongoose.Schema(
       type: String,
       enum: ['minutes', 'hours'],
       default: 'minutes'
+    },
+    // ── Paid Boost / Sponsored Ranking ────────────────────────────────────────
+    boost: {
+      isActive: { type: Boolean, default: false },
+      tier: {
+        type: String,
+        enum: ['featured', 'top10', 'top50', 'standard'],
+        default: null
+      },
+      feePercent: { type: Number, default: 0 },
+      score: { type: Number, default: 0 },
+      startedAt: { type: Date, default: null },
+      expiresAt: { type: Date, default: null },
+      boostedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      notes: { type: String, trim: true, default: '' }
+    },
+    // ── Vendor Boost Request ──────────────────────────────────────────────────
+    boostRequest: {
+      status: {
+        type: String,
+        enum: ['none', 'pending', 'approved', 'rejected'],
+        default: 'none'
+      },
+      requestedTier: {
+        type: String,
+        enum: ['featured', 'top10', 'top50', 'standard', null],
+        default: null
+      },
+      requestedAt: { type: Date, default: null },
+      rejectedReason: { type: String, trim: true, default: '' }
     }
   },
   {
