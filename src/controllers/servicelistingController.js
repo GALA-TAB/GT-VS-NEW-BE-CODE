@@ -1463,14 +1463,7 @@ const getServiceListingsforLandingPage = catchAsync(async (req, res) => {
 
     { $match: { ...query, status: 'Available', VerificationStatus: 'verified', completed: true } },
     ...filterForServiceAvailabilities(req.query),
-    ...servicelistingFormat,
-    // Boosted listings (active, not expired) float to the top, sorted by score desc
-    {
-      $sort: {
-        'boost.score': -1,
-        createdAt: -1
-      }
-    }
+    ...servicelistingFormat
   ];
   const serviceListings = await ServiceListing.aggregate(pipeline)
     .skip((page - 1) * parseInt(limit, 10))

@@ -300,22 +300,6 @@ const ServiceListingSchema = new mongoose.Schema(
       type: String,
       enum: ['minutes', 'hours'],
       default: 'minutes'
-    },
-    // ── Paid Boost / Sponsored Ranking ───────────────────────────────────────
-    boost: {
-      isActive: { type: Boolean, default: false },
-      // tier drives the score: featured=1000, top10=100, top50=50, standard=10
-      tier: {
-        type: String,
-        enum: ['featured', 'top10', 'top50', 'standard'],
-        default: null
-      },
-      feePercent: { type: Number, default: 0 },   // additional % fee vendor pays
-      score: { type: Number, default: 0 },         // used for sorting (higher = earlier)
-      startedAt: { type: Date, default: null },
-      expiresAt: { type: Date, default: null },
-      boostedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-      notes: { type: String, trim: true, default: '' }
     }
   },
   {
