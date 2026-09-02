@@ -25,6 +25,7 @@ const {
   checkBufferTimeAvailability
 } = require('../utils/calculateServicePrice');
 const Calendar = require('../models/Calendar');
+const SharedCartPayment = require('../models/SharedCartPayment');
 const sendNotification = require('../utils/storeNotification');
 const { bookingformat } = require('../utils/dataformat');
 const mongoose = require('mongoose');
@@ -91,6 +92,7 @@ const createBooking = catchAsync(async (req, res, next) => {
     guests,
     paymentMethodid,
     paymentSource,
+    sharedCartPaymentToken,
     message,
     couponCode,
     addOnServices,
@@ -105,6 +107,11 @@ const createBooking = catchAsync(async (req, res, next) => {
   } = req.body;
 
   const isWalletPayment = paymentSource === 'wallet';
+  // Sentinel set by the shared-cart-payment/QR flow — payment was already
+  // collected via that link, so this request must not attempt to charge the
+  // customer again. Verified against the backend record below, not trusted
+  // as-is from the client.
+  const isSharedCartPayment = paymentMethodid === 'shared_cart_payment';
 
   // ── Text content moderation on booking message ──
   if (message) {
@@ -207,9 +214,28 @@ const createBooking = catchAsync(async (req, res, next) => {
     return next(new AppError('User not found', 404));
   }
 
+  // Never trust the client's claim that a shared-cart-payment link covers
+  // this booking — verify it belongs to this user and is fully paid.
+  if (isSharedCartPayment) {
+    if (!sharedCartPaymentToken) {
+      return next(new AppError('Missing shared payment link token', 400));
+    }
+    const sharedCart = await SharedCartPayment.findOne({
+      token: sharedCartPaymentToken,
+      createdBy: userId,
+    });
+    if (!sharedCart) {
+      return next(new AppError('Payment link not found or not authorized', 404));
+    }
+    const remaining = sharedCart.totalAmount - sharedCart.amountPaid;
+    if (sharedCart.paymentStatus !== 'paid' || remaining > 0.01) {
+      return next(new AppError('This payment link has not been fully paid yet', 402));
+    }
+  }
+
   // Get or create a Stripe customer
   let { stripeCustomerId } = user;
-  if (!isWalletPayment) {
+  if (!isWalletPayment && !isSharedCartPayment) {
     // Verify existing Stripe customer is still valid, or create a new one
     if (stripeCustomerId) {
       try {
@@ -253,7 +279,7 @@ const createBooking = catchAsync(async (req, res, next) => {
   );
 
   console.log('totalPriceforConfirm', totalPriceforConfirm);
-  if (!isWalletPayment) {
+  if (!isWalletPayment && !isSharedCartPayment) {
     await attachPaymentMethod({
       paymentMethodId: paymentMethodid,
       customerId: stripeCustomerId
@@ -311,6 +337,10 @@ const createBooking = catchAsync(async (req, res, next) => {
       description: `Booking payment for ${listingExists.title || 'service'}`,
     });
     await wallet.save();
+  } else if (isSharedCartPayment) {
+    // ── Shared-cart-payment (QR/link) path ── payment was already collected
+    // and verified above; don't charge the customer again here.
+    finalTotalPrice = totalWithTax;
   } else {
     // ── Card payment path (existing Stripe flow) ──
     const paymentAmount = Math.round(totalWithTax * 100);
@@ -368,7 +398,7 @@ const createBooking = catchAsync(async (req, res, next) => {
           discountValue: discountValue || 0,
           cancellationPolicy: listingExists?.cancellationPolicy || '',
           vendorRules: listingExists?.rules || '',
-          paymentMethod: isWalletPayment ? 'wallet' : 'card',
+          paymentMethod: isWalletPayment ? 'wallet' : (isSharedCartPayment ? 'shared_cart_payment' : 'card'),
         },
         ipAddress: req.ip || req.headers['x-forwarded-for'] || req.connection?.remoteAddress,
         userAgent: req.headers['user-agent'],
@@ -380,13 +410,13 @@ const createBooking = catchAsync(async (req, res, next) => {
   }
 
   console.log(paymentIntent, 'paymentIntent created successfully');
-  if (isWalletPayment || (instantBookingCheck === true && paymentIntent?.status === 'succeeded')) {
+  if (isWalletPayment || isSharedCartPayment || (instantBookingCheck === true && paymentIntent?.status === 'succeeded')) {
     await PayHistory.create({
-      payoutId: isWalletPayment ? `wallet_${booking._id}` : paymentIntent?.id,
+      payoutId: isWalletPayment ? `wallet_${booking._id}` : (isSharedCartPayment ? `shared_cart_${booking._id}` : paymentIntent?.id),
       customerId: booking?.user,
       bookingId: booking._id,
-      bank: isWalletPayment ? 'Wallet' : (paymentIntent?.cardDetails?.brand || 'N/A'),
-      totalAmount: isWalletPayment ? Math.round(finalTotalPrice) : Math.round(paymentIntent?.amount / 100),
+      bank: isWalletPayment ? 'Wallet' : (isSharedCartPayment ? 'Shared Payment Link' : (paymentIntent?.cardDetails?.brand || 'N/A')),
+      totalAmount: isWalletPayment || isSharedCartPayment ? Math.round(finalTotalPrice) : Math.round(paymentIntent?.amount / 100),
 
       status: 'Paid'
     });

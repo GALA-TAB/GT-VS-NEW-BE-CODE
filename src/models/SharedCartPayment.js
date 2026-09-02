@@ -9,7 +9,13 @@ const sharedCartItemSchema = new Schema({
   guests: { type: Number, default: 1 },
   totalPrice: { type: Number, required: true },
   servicePrice: [{ name: String, price: Number }],
-  addOnServices: [{ name: String, price: Number }],
+  addOnServices: [{
+    _id: { type: String, default: null },
+    name: String,
+    price: Number,
+    pricingType: String,
+    selectedQuantity: { type: Number, default: 1 },
+  }],
   couponCode: { type: String, default: null },
 }, { _id: false });
 
@@ -45,6 +51,27 @@ const sharedCartPaymentSchema = new Schema(
     totalAmount: {
       type: Number,
       required: true,
+    },
+    salesTax: {
+      type: Number,
+      default: 0,
+    },
+    // Booking agreement, signed against this link so the renter's browser (or
+    // the backend, once it drives auto-confirm) can create the booking without
+    // asking the customer to re-sign.
+    agreementAccepted: {
+      type: Boolean,
+      default: false,
+    },
+    signatureImage: { type: String, default: null },
+    initialsImage: { type: String, default: null },
+    idFrontImage: { type: String, default: null },
+    idBackImage: { type: String, default: null },
+    // Set once a booking has been created from this (paid) link, so it can't
+    // be replayed into a second booking.
+    consumed: {
+      type: Boolean,
+      default: false,
     },
     // Payment options
     allowPartialPayment: {

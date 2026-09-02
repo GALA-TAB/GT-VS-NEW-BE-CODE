@@ -1,6 +1,7 @@
 const express = require('express');
 const {
   createSharedCartPayment,
+  updateSharedCartPayment,
   getSharedCartByToken,
   processSharedCartPayment,
   getMySharedCartLinks,
@@ -13,6 +14,7 @@ const router = express.Router();
 router.post('/', requireAuth, createSharedCartPayment);
 router.get('/my-links', requireAuth, getMySharedCartLinks);
 router.patch('/:token/deactivate', requireAuth, deactivateSharedCartLink);
+router.patch('/:token', requireAuth, updateSharedCartPayment);
 
 // Public — view & pay (no auth required)
 router.get('/:token', getSharedCartByToken);
