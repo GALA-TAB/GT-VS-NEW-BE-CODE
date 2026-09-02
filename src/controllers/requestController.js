@@ -215,12 +215,15 @@ const createBooking = catchAsync(async (req, res, next) => {
   }
 
   // Never trust the client's claim that a shared-cart-payment link covers
-  // this booking — verify it belongs to this user and is fully paid.
+  // this booking — verify it belongs to this user, is fully paid, and that
+  // this exact service+dates was actually part of the paid cart (so a paid
+  // link can't be replayed into a booking outside its original cart).
+  let sharedCart = null;
   if (isSharedCartPayment) {
     if (!sharedCartPaymentToken) {
       return next(new AppError('Missing shared payment link token', 400));
     }
-    const sharedCart = await SharedCartPayment.findOne({
+    sharedCart = await SharedCartPayment.findOne({
       token: sharedCartPaymentToken,
       createdBy: userId,
     });
@@ -230,6 +233,15 @@ const createBooking = catchAsync(async (req, res, next) => {
     const remaining = sharedCart.totalAmount - sharedCart.amountPaid;
     if (sharedCart.paymentStatus !== 'paid' || remaining > 0.01) {
       return next(new AppError('This payment link has not been fully paid yet', 402));
+    }
+    const matchesThisItem = sharedCart.cartItems.some(
+      (item) =>
+        String(item.serviceId) === String(service) &&
+        new Date(item.checkIn).getTime() === new Date(checkIn).getTime() &&
+        new Date(item.checkOut).getTime() === new Date(checkOut).getTime()
+    );
+    if (!matchesThisItem) {
+      return next(new AppError('This service/date is not part of the paid cart link', 400));
     }
   }
 
@@ -374,6 +386,16 @@ const createBooking = catchAsync(async (req, res, next) => {
     guestsOfHonor: guestsOfHonor || []
   });
   res.locals.dataId = booking._id; // Store the ID of the created booking in res.locals
+
+  // Once every cart item for this shared-payment link has produced a
+  // booking, mark it consumed so the link can't be replayed further.
+  if (isSharedCartPayment && sharedCart) {
+    sharedCart.bookingIds.push(booking._id);
+    if (sharedCart.bookingIds.length >= sharedCart.cartItems.length) {
+      sharedCart.consumed = true;
+    }
+    await sharedCart.save();
+  }
 
   // Save agreement with signature if provided
   if (signatureImage && initialsImage) {

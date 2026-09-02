@@ -1,9 +1,67 @@
 const SharedCartPayment = require('../models/SharedCartPayment');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
+// Reused directly (not over HTTP) so a fully-paid link creates its booking(s)
+// server-side, instead of depending on the renter's browser tab being open.
+const { createBooking } = require('./requestController');
 
 const { STRIPE_SECRET_ACCESS_KEY } = process.env;
 const stripe = STRIPE_SECRET_ACCESS_KEY ? require('stripe')(STRIPE_SECRET_ACCESS_KEY) : null;
+
+// Drives `createBooking` for one cart item without an actual HTTP request/response.
+const runCreateBookingForItem = (sharedCart, item) =>
+  new Promise((resolve) => {
+    const req = {
+      body: {
+        service: item.serviceId,
+        checkIn: item.checkIn,
+        checkOut: item.checkOut,
+        guests: item.guests,
+        paymentMethodid: 'shared_cart_payment',
+        sharedCartPaymentToken: sharedCart.token,
+        totalPrice: item.totalPrice,
+        addOnServices: item.addOnServices,
+        couponCode: item.couponCode || '',
+        timezone: 'UTC',
+        signatureImage: sharedCart.signatureImage,
+        initialsImage: sharedCart.initialsImage,
+        idFrontImage: sharedCart.idFrontImage,
+        idBackImage: sharedCart.idBackImage,
+      },
+      user: { _id: sharedCart.createdBy },
+      ip: '',
+      headers: {},
+    };
+    const res = {
+      status() {
+        return this;
+      },
+      json(payload) {
+        resolve({ ok: true, payload });
+      },
+      locals: {},
+    };
+    const next = (err) => resolve({ ok: false, error: err });
+    createBooking(req, res, next);
+  });
+
+// Creates the booking(s) for every item in a now-fully-paid shared cart link.
+// Best-effort per item: one item's failure (e.g. dates no longer available)
+// doesn't block the others, and is logged for manual follow-up since the
+// customer has already paid.
+const autoCreateBookingsForSharedCart = async (sharedCart) => {
+  for (const item of sharedCart.cartItems) {
+    // Skip items already booked (e.g. a retry after a partial earlier failure).
+    if (sharedCart.bookingIds.length >= sharedCart.cartItems.length) break;
+    const result = await runCreateBookingForItem(sharedCart, item);
+    if (!result.ok) {
+      console.error(
+        `Auto-booking failed for shared-cart-payment ${sharedCart.token}, item ${item.serviceId}:`,
+        result.error?.message || result.error
+      );
+    }
+  }
+};
 
 // Identifies *which booking* a cart is for (service + dates only, ignoring
 // add-ons/guests/price which can legitimately change). Used to make sure a
@@ -168,6 +226,8 @@ exports.getSharedCartByToken = catchAsync(async (req, res, next) => {
       paymentStatus: sharedCart.paymentStatus,
       amountPaid: sharedCart.amountPaid,
       remainingAmount: sharedCart.totalAmount - sharedCart.amountPaid,
+      consumed: sharedCart.consumed,
+      bookingIds: sharedCart.bookingIds,
       agreementAccepted: sharedCart.agreementAccepted,
       signatureImage: sharedCart.signatureImage,
       initialsImage: sharedCart.initialsImage,
@@ -256,6 +316,16 @@ exports.processSharedCartPayment = catchAsync(async (req, res, next) => {
   sharedCart.paymentStatus = sharedCart.amountPaid >= sharedCart.totalAmount ? 'paid' : 'partial';
   await sharedCart.save();
 
+  // Fully paid — create the booking(s) now, from the backend, so this doesn't
+  // depend on the renter's browser tab being open to notice and confirm it.
+  if (sharedCart.paymentStatus === 'paid' && !sharedCart.consumed) {
+    try {
+      await autoCreateBookingsForSharedCart(sharedCart);
+    } catch (err) {
+      console.error(`Auto-booking failed for shared-cart-payment ${sharedCart.token}:`, err.message);
+    }
+  }
+
   res.status(200).json({
     status: 'success',
     data: {
@@ -275,7 +345,7 @@ exports.processSharedCartPayment = catchAsync(async (req, res, next) => {
 exports.getMySharedCartLinks = catchAsync(async (req, res, next) => {
   const links = await SharedCartPayment.find({ createdBy: req.user._id, isActive: true })
     .sort({ createdAt: -1 })
-    .select('token cartItems totalAmount salesTax currency paymentStatus amountPaid expiresAt isActive createdAt');
+    .select('token cartItems totalAmount salesTax currency paymentStatus amountPaid expiresAt isActive createdAt consumed bookingIds');
 
   res.status(200).json({
     status: 'success',
@@ -291,6 +361,8 @@ exports.getMySharedCartLinks = catchAsync(async (req, res, next) => {
       expiresAt: l.expiresAt,
       active: l.isActive,
       createdAt: l.createdAt,
+      consumed: l.consumed,
+      bookingIds: l.bookingIds,
     })),
   });
 });

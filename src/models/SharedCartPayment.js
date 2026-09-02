@@ -73,6 +73,12 @@ const sharedCartPaymentSchema = new Schema(
       type: Boolean,
       default: false,
     },
+    // Bookings created from this link (one per cart item, pushed as each is
+    // created — see `consumed`, set once this covers every cart item).
+    bookingIds: {
+      type: [{ type: Schema.Types.ObjectId, ref: 'Booking' }],
+      default: [],
+    },
     // Payment options
     allowPartialPayment: {
       type: Boolean,
