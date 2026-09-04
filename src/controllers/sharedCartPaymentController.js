@@ -4,6 +4,26 @@ const AppError = require('../utils/appError');
 // Reused directly (not over HTTP) so a fully-paid link creates its booking(s)
 // server-side, instead of depending on the renter's browser tab being open.
 const { createBooking } = require('./requestController');
+const { getIO } = require('../utils/socket');
+
+// Pushes the latest payment status to the renter's cart in real time, instead
+// of relying solely on the FE's 8s poll of GET /shared-cart-payment/:token.
+const emitSharedCartPaymentUpdate = (sharedCart) => {
+  try {
+    const io = getIO();
+    if (!io || !sharedCart?.createdBy) return;
+    io.to(sharedCart.createdBy.toString()).emit('sharedCartPaymentUpdated', {
+      token: sharedCart.token,
+      amountPaid: sharedCart.amountPaid,
+      remainingAmount: sharedCart.totalAmount - sharedCart.amountPaid,
+      paymentStatus: sharedCart.paymentStatus,
+      consumed: sharedCart.consumed,
+      bookingIds: sharedCart.bookingIds,
+    });
+  } catch (err) {
+    console.error('Failed to emit sharedCartPaymentUpdated:', err.message);
+  }
+};
 
 const { STRIPE_SECRET_ACCESS_KEY } = process.env;
 const stripe = STRIPE_SECRET_ACCESS_KEY ? require('stripe')(STRIPE_SECRET_ACCESS_KEY) : null;
@@ -325,6 +345,8 @@ exports.processSharedCartPayment = catchAsync(async (req, res, next) => {
       console.error(`Auto-booking failed for shared-cart-payment ${sharedCart.token}:`, err.message);
     }
   }
+
+  emitSharedCartPaymentUpdate(sharedCart);
 
   res.status(200).json({
     status: 'success',
