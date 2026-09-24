@@ -126,6 +126,19 @@ const BookingSchema = new Schema(
         price: {
           type: Number,
           required: true
+        },
+        description: {
+          type: String,
+          trim: true
+        },
+        pricingType: {
+          type: String,
+          enum: ['flat', 'quantity'],
+          default: 'flat'
+        },
+        selectedQuantity: {
+          type: Number,
+          default: 1
         }
       }
     ],

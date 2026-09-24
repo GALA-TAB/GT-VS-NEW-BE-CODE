@@ -35,7 +35,9 @@ const getServiceBookingPrice = (
   const servicePriceValue = addOnServices?.reduce(
     (acc, curr) => {
       const price = Number(curr.price || 0);
-      const quantity = curr.pricingType === 'quantity' ? Number(curr.quantity || 1) : 1;
+      // FE sends the customer's chosen quantity as `selectedQuantity`; `quantity` is only
+      // the vendor's default/preset value, so it must be checked first.
+      const quantity = curr.pricingType === 'quantity' ? Number(curr.selectedQuantity || curr.quantity || 1) : 1;
       return acc + (price * quantity);
     },
     0
