@@ -301,6 +301,15 @@ const ServiceListingSchema = new mongoose.Schema(
       enum: ['minutes', 'hours'],
       default: 'minutes'
     },
+    advanceNotice: {
+      type: Number,
+      default: 0
+    },
+    advanceNoticeUnit: {
+      type: String,
+      enum: ['minutes', 'hours', 'days'],
+      default: 'minutes'
+    },
     // ── Paid Boost / Sponsored Ranking ────────────────────────────────────────
     boost: {
       isActive: { type: Boolean, default: false },

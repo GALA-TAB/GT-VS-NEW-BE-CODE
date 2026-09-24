@@ -245,6 +245,13 @@ const serviceupdateSchema = Joi.object({
         "string.valid": "Buffer time unit must be one of the following: minutes, hours.",
         "any.required": "Buffer time unit is required."
     }),
+    advanceNotice: Joi.number().min(0).messages({
+        "number.base": "Advance notice must be a number.",
+        "number.min": "Advance notice cannot be negative."
+    }),
+    advanceNoticeUnit: Joi.string().valid("minutes", "hours", "days").default("minutes").messages({
+        "string.valid": "Advance notice unit must be one of the following: minutes, hours, days."
+    }),
     serviceAddress: serviceAddressSchema,
     customAmenities: Joi.array().items(
         Joi.string().trim().max(100).messages({
