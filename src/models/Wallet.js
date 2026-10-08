@@ -36,6 +36,17 @@ const fundMeLinkSchema = new Schema({
     checkIn: { type: Date },
     checkOut: { type: Date },
     guests: { type: Number, default: 1 },
+    // Pre-tax base price (before add-ons), kept separate so the fund page
+    // can show the same itemized add-on/tax breakdown as the create form.
+    basePrice: { type: Number },
+    addOnServices: [{
+      name: { type: String },
+      price: { type: Number },
+      selectedQuantity: { type: Number, default: 1 },
+    }],
+    // Tax rate applied at creation time (for reference/audit).
+    taxRate: { type: Number },
+    // Pre-tax total = basePrice + sum(addOnServices).
     totalPrice: { type: Number },
   }],
   contributions: [{
