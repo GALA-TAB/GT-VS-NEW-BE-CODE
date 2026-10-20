@@ -4,6 +4,7 @@ const Booking = require('../models/Bookings');
 const sendNotification = require('./storeNotification');
 const Pricing = require('../models/Pricing');
 const Payments = require('../models/Payment');
+const ReferralCommission = require('../models/ReferralCommission');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Booking Completion Cron  (runs every minute)
@@ -43,7 +44,9 @@ cron.schedule('* * * * *', async () => {
         let amountAfterFee = booking.totalPrice;
         let platformFee = 0;
 
-        if (booking.service.vendorId.customPricingPercentage) {
+        if (booking.referral?.eligibility === 'eligible' && Number.isFinite(Number(booking.referral.platformFeePercent))) {
+          platformFee = (booking.totalPrice * booking.referral.platformFeePercent) / 100;
+        } else if (booking.service.vendorId.customPricingPercentage) {
           platformFee = (booking.totalPrice * booking.service.vendorId.customPricingPercentage) / 100;
         } else {
           const pricing = await Pricing.findOne({});
@@ -52,6 +55,10 @@ cron.schedule('* * * * *', async () => {
           }
         }
         amountAfterFee = booking.totalPrice - platformFee;
+        const referralCommission = booking.referral?.eligibility === 'eligible'
+          ? Number(booking.referral.commissionAmount || 0)
+          : 0;
+        amountAfterFee = Math.max(0, amountAfterFee - referralCommission);
 
         // ── 2. Escrow release timestamp (checkIn + 72h, Airbnb-style: window starts
         //          from the booking date, not checkout date) ─────────────────
@@ -71,6 +78,7 @@ cron.schedule('* * * * *', async () => {
           existingPayment.escrowReleaseAt = escrowReleaseAt;
           existingPayment.amount = amountAfterFee;
           existingPayment.systemFee = platformFee;
+          existingPayment.referralCommission = referralCommission;
           await existingPayment.save();
         } else {
           await Payments.create({
@@ -78,10 +86,23 @@ cron.schedule('* * * * *', async () => {
             vendorId: booking.service.vendorId._id.toString(),
             amount: amountAfterFee,
             systemFee: platformFee,
+            referralCommission,
             escrowStatus: 'held',
             escrowReleaseAt,
             status: 'pending'
           });
+        }
+
+        if (referralCommission > 0) {
+          const escrowPayment = await Payments.findOne({ booking: booking._id });
+          await ReferralCommission.updateOne(
+            { booking: booking._id, status: { $nin: ['canceled', 'paid'] } },
+            {
+              $set: { allocatedAmount: referralCommission, availableProviderFundsVerified: false },
+              $addToSet: { paymentTransactions: escrowPayment?._id },
+              $push: { auditTrail: { action: 'vendor_proceeds_allocated', metadata: { amount: referralCommission } } }
+            }
+          );
         }
 
         const releaseDate = moment(escrowReleaseAt).format('MMMM Do YYYY, h:mm a [UTC]');
@@ -92,7 +113,7 @@ cron.schedule('* * * * *', async () => {
           title: 'Booking Completed - Payout Pending',
           message:
             'Booking #' + booking._id + ' ("' + booking.service.title + '") is complete. ' +
-            'Your payout of $' + Number(amountAfterFee).toFixed(2) +
+            'Your expected proceeds of $' + Number(amountAfterFee).toFixed(2) +
             ' is held as a delayed payout and will be released on ' + releaseDate +
             ' if no dispute is filed.',
           type: 'payout',

@@ -4,8 +4,10 @@ const Booking = require('../models/Bookings');
 const Payments = require('../models/Payment');
 const User = require('../models/users/User');
 const sendNotification = require('../utils/storeNotification');
-const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
+const StripeWebhookEvent = require('../models/StripeWebhookEvent');
+const ReferralAccount = require('../models/ReferralAccount');
+const ReferralCommission = require('../models/ReferralCommission');
 
 // Stripe Webhook Controller
 exports.stripeWebhook = catchAsync(async (req, res, next) => {
@@ -18,8 +20,6 @@ exports.stripeWebhook = catchAsync(async (req, res, next) => {
 
   const sig = req.headers["stripe-signature"];
   let event;
-  console.log("webhook triggered");
-  console.log("event.type", event?.type);
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
@@ -27,16 +27,48 @@ exports.stripeWebhook = catchAsync(async (req, res, next) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  switch (event.type) {
+  let eventRecord = await StripeWebhookEvent.findOne({ eventId: event.id });
+  if (eventRecord?.status === 'processed') return res.status(200).send();
+  let claimed = false;
+  if (!eventRecord) {
+    try {
+      eventRecord = await StripeWebhookEvent.create({ eventId: event.id, eventType: event.type, status: 'processing' });
+      claimed = true;
+    } catch (error) {
+      if (error.code !== 11000) throw error;
+      eventRecord = await StripeWebhookEvent.findOne({ eventId: event.id });
+    }
+  }
+  if (!claimed && eventRecord?.status !== 'processed') {
+    eventRecord = await StripeWebhookEvent.findOneAndUpdate(
+      {
+        eventId: event.id,
+        $or: [
+          { status: 'failed' },
+          { status: 'processing', processingStartedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } }
+        ]
+      },
+      { $set: { status: 'processing', processingStartedAt: new Date(), failureReason: '' } },
+      { new: true }
+    );
+    claimed = Boolean(eventRecord);
+  }
+  if (!claimed) return res.status(500).send('Webhook event is already being processed; retry later.');
+
+  try {
+    switch (event.type) {
 
     case "account.updated": {
       const account = event.data.object;
       const stripeId = account.id;
       const stripeRecord = await Vendor.findOne({ stripeAccountId: stripeId });
-
-      if (!stripeRecord) {
-        return next(new AppError(`No Stripe account found with ID ${stripeId}`, 404));
+      const referralRecord = await ReferralAccount.findOne({ stripeAccountId: stripeId });
+      if (referralRecord) {
+        referralRecord.payoutOnboardingStatus = account.payouts_enabled ? 'verified' : account.requirements?.disabled_reason ? 'restricted' : 'pending';
+        await referralRecord.save();
       }
+
+      if (!stripeRecord) break;
 
       // Check if account is fully onboarded and can accept payments
       let status  ;
@@ -78,6 +110,10 @@ exports.stripeWebhook = catchAsync(async (req, res, next) => {
       if (payment) {
         payment.escrowStatus = 'disputed';
         await payment.save();
+        await ReferralCommission.updateOne(
+          { booking: payment.booking, status: { $nin: ['paid', 'canceled'] } },
+          { $set: { status: 'paused' }, $push: { auditTrail: { action: 'dispute_opened', metadata: { chargeId, disputeId: dispute.id } } } }
+        );
 
         const booking = await Booking.findById(payment.booking);
         if (booking) {
@@ -149,6 +185,19 @@ exports.stripeWebhook = catchAsync(async (req, res, next) => {
           });
         }
         await payment.save();
+        const referralCommission = await ReferralCommission.findOne({ booking: payment.booking });
+        if (referralCommission) {
+          if (dispute.status === 'lost') {
+            referralCommission.status = referralCommission.providerPayoutId ? 'review' : 'canceled';
+          } else if (referralCommission.status !== 'paid') {
+            referralCommission.status = 'pending';
+          }
+          if (dispute.status === 'lost' && referralCommission.providerPayoutId) {
+            referralCommission.recoverableAmount = referralCommission.amount;
+          }
+          referralCommission.auditTrail.push({ action: 'dispute_closed', metadata: { disputeId: dispute.id, resolution: dispute.status } });
+          await referralCommission.save();
+        }
         console.log('[webhook] charge.dispute.closed — status:', dispute.status, '— charge:', chargeId);
       }
       break;
@@ -169,10 +218,20 @@ exports.stripeWebhook = catchAsync(async (req, res, next) => {
       break;
     }
 
-    default:
-      console.log(`Unhandled event type ${event.type}`);
+      default:
+        console.log(`Unhandled event type ${event.type}`);
+    }
+    await StripeWebhookEvent.updateOne(
+      { eventId: event.id, status: 'processing' },
+      { $set: { status: 'processed', processedAt: new Date(), failureReason: '' } }
+    );
+    return res.status(200).send();
+  } catch (error) {
+    await StripeWebhookEvent.updateOne(
+      { eventId: event.id },
+      { $set: { status: 'failed', failureReason: String(error.message || error).slice(0, 500) } }
+    );
+    return next(error);
   }
-
-  res.status(200).send();
 });
 

@@ -47,7 +47,8 @@ const {
   businessCertificateRoute,
   walletRoute,
   bookingAgreementRoute,
-  boostRoute
+  boostRoute,
+  referralRoute
 } = require('../routes');
 
 const otherRoutes = require('./otherRoutes');
@@ -123,6 +124,7 @@ module.exports = (app) => {
   app.use('/api/wallet', walletRoute);
   app.use('/api/booking-agreements', bookingAgreementRoute);
   app.use('/api/boost', boostRoute);
+  app.use('/api/referral', referralRoute);
   otherRoutes(app);
 };
                                                                                       

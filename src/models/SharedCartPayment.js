@@ -32,6 +32,11 @@ const sharedCartPaymentSchema = new Schema(
       ref: 'User',
       required: true,
     },
+    referralAttribution: {
+      type: Schema.Types.ObjectId,
+      ref: 'ReferralAttribution',
+      default: null,
+    },
     cartItems: {
       type: [sharedCartItemSchema],
       required: true,

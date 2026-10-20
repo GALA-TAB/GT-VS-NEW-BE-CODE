@@ -67,6 +67,32 @@ const BookingSchema = new Schema(
       trim: true,
       default: null
     },
+    referral: {
+      attribution: { type: Schema.Types.ObjectId, ref: 'ReferralAttribution', default: null },
+      referrer: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+      code: { type: String, trim: true, default: null },
+      eligibility: {
+        type: String,
+        enum: ['eligible', 'below_threshold', 'vendor_not_participating', 'self_referral'],
+        default: null
+      },
+      serviceSubtotal: { type: Number, default: 0, min: 0 },
+      ratePercent: { type: Number, default: 0, min: 0 },
+      minimumServiceSubtotal: { type: Number, default: 0, min: 0 },
+      completionDelayHours: { type: Number, default: 48, min: 0 },
+      commissionAmount: { type: Number, default: 0, min: 0 },
+      platformFeePercent: { type: Number, default: 0, min: 0 },
+      platformFeeAmount: { type: Number, default: 0, min: 0 },
+      attributionRulesVersion: { type: Number, default: null },
+      vendorTermsVersion: { type: String, default: null },
+      committedAt: { type: Date, default: null },
+      completionConfirmedAt: { type: Date, default: null },
+      auditTrail: [{
+        action: { type: String, required: true },
+        at: { type: Date, default: Date.now },
+        metadata: { type: Schema.Types.Mixed, default: {} }
+      }]
+    },
     status: {
       type: String,
       enum: ['pending', 'booked', 'canceled', 'completed', 'rejected'],

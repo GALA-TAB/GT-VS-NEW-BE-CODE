@@ -5,6 +5,7 @@ const AppError = require('../utils/appError');
 // server-side, instead of depending on the renter's browser tab being open.
 const { createBooking } = require('./requestController');
 const { getIO } = require('../utils/socket');
+const { resolveReferralAttribution } = require('../utils/referralAttribution');
 
 // Pushes the latest payment status to the renter's cart in real time, instead
 // of relying solely on the FE's 8s poll of GET /shared-cart-payment/:token.
@@ -48,6 +49,7 @@ const runCreateBookingForItem = (sharedCart, item) =>
         idFrontImage: sharedCart.idFrontImage,
         idBackImage: sharedCart.idBackImage,
       },
+      referralAttributionId: sharedCart.referralAttribution,
       user: { _id: sharedCart.createdBy },
       ip: '',
       headers: {},
@@ -115,6 +117,9 @@ exports.createSharedCartPayment = catchAsync(async (req, res, next) => {
     initialsImage,
     idFrontImage,
     idBackImage,
+    referralAttributionToken,
+    referralCode,
+    referralVisitorId,
   } = req.body;
 
   if (!cartItems || !cartItems.length) {
@@ -140,8 +145,15 @@ exports.createSharedCartPayment = catchAsync(async (req, res, next) => {
     await SharedCartPayment.updateMany({ _id: { $in: staleIds } }, { isActive: false });
   }
 
+  const resolvedAttribution = await resolveReferralAttribution({
+    token: referralAttributionToken,
+    code: referralCode,
+    userId: req.user._id,
+    visitorId: referralVisitorId
+  });
   const sharedCart = await SharedCartPayment.create({
     createdBy: req.user._id,
+    referralAttribution: resolvedAttribution?.attribution?._id || null,
     cartItems,
     itemDiscounts: itemDiscounts || {},
     currency: currency || 'USD',

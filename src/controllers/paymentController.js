@@ -3,6 +3,8 @@
 const { default: mongoose } = require('mongoose');
 const Bookings = require('../models/Bookings');
 const Payments = require('../models/Payment');
+const ReferralCommission = require('../models/ReferralCommission');
+const { calculateRemainingCommission } = require('../utils/referral-program');
 const User = require('../models/users/User');
 const APIFeatures = require('../utils/apiFeatures');
 const AppError = require('../utils/appError');
@@ -11,6 +13,7 @@ const Email = require('../utils/email');
 const { createStripeOnBoardingLink, createStripeExpressAccount, receiveAccount } = require('../utils/stripe-utils/connect-accounts.util');
 const { maintoConnect } = require('../utils/stripe-utils/stripe-transfer.util');
 const { creditVendorWallet } = require('./walletController');
+const stripe = require('../config/stripe');
 const getAllpaymentsforVendor = catchAsync(async (req, res, next) => {
 
     const query = {
@@ -468,7 +471,7 @@ const resolveDispute = catchAsync(async (req, res, next) => {
   const payment = await Payments.findOne({ booking: bookingId });
   if (!payment) return next(new AppError('No payment record found for this booking.', 404));
 
-  const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+  if (!stripe) return next(new AppError('Stripe is not configured for dispute resolution.', 503));
 
   if (resolution === 'released') {
     // Release funds to vendor anyway
@@ -505,6 +508,9 @@ const resolveDispute = catchAsync(async (req, res, next) => {
       }
     }
     const chargeId = payment.stripeChargeId;
+    if (!chargeId) {
+      return next(new AppError('No Stripe charge found for this booking; refund not processed.', 400));
+    }
     if (chargeId) {
       const refundParams = { charge: chargeId };
       if (resolution === 'partial_refund' && refundAmount) {
@@ -524,6 +530,47 @@ const resolveDispute = catchAsync(async (req, res, next) => {
 
   booking.inDispute = false;
   booking.disputeResolvedAt = new Date();
+  const referralCommission = await ReferralCommission.findOne({ booking: booking._id });
+  if (referralCommission) {
+    const originalServiceSubtotal = Number(booking.basePrice || referralCommission.serviceSubtotal);
+    if (resolution === 'released') {
+      if (referralCommission.status !== 'paid') referralCommission.status = 'pending';
+      referralCommission.auditTrail.push({ action: 'dispute_resolved_released', actor: req.user._id });
+    } else {
+      const customerRefund = resolution === 'refunded' ? Number(booking.totalPrice || 0) : Number(refundAmount);
+      const serviceRefundAmount = resolution === 'refunded'
+        ? Math.max(0, originalServiceSubtotal - referralCommission.refundedServiceSubtotal)
+        : Math.min(originalServiceSubtotal, originalServiceSubtotal * customerRefund / Math.max(Number(booking.totalPrice || 0), 0.01));
+      const refundedServiceSubtotal = Math.min(originalServiceSubtotal, referralCommission.refundedServiceSubtotal + serviceRefundAmount);
+      const remainingServiceSubtotal = Math.max(0, originalServiceSubtotal - refundedServiceSubtotal);
+      const recalculatedAmount = calculateRemainingCommission({
+        remainingServiceSubtotal,
+        ratePercent: referralCommission.ratePercent,
+        minimumSubtotal: referralCommission.minimumServiceSubtotal
+      });
+      const previousAmount = referralCommission.amount;
+      if (referralCommission.status === 'paid') {
+        referralCommission.recoverableAmount = Math.max(0, previousAmount - recalculatedAmount);
+        referralCommission.status = 'review';
+      } else {
+        referralCommission.amount = recalculatedAmount;
+        referralCommission.allocatedAmount = Math.min(referralCommission.allocatedAmount, recalculatedAmount);
+        referralCommission.status = resolution === 'refunded' || recalculatedAmount === 0 ? 'canceled' : 'pending';
+      }
+      referralCommission.refundedServiceSubtotal = refundedServiceSubtotal;
+      referralCommission.remainingServiceSubtotal = remainingServiceSubtotal;
+      booking.referral.serviceSubtotal = remainingServiceSubtotal;
+      booking.referral.commissionAmount = recalculatedAmount;
+      booking.referral.auditTrail.push({ action: 'dispute_refund_reconciled', metadata: { resolution, customerRefund, remainingServiceSubtotal, recalculatedAmount } });
+      referralCommission.auditTrail.push({
+        action: 'dispute_refund_reconciled',
+        actor: req.user._id,
+        reason: resolution,
+        metadata: { customerRefund, remainingServiceSubtotal, previousAmount, recalculatedAmount }
+      });
+    }
+    await referralCommission.save();
+  }
   booking.disputeResolution = resolution;
   await booking.save();
   await payment.save();
@@ -634,9 +681,9 @@ const vendorPartialRefund = catchAsync(async (req, res, next) => {
   if (!chargeId) {
     return next(new AppError('No Stripe charge found for this booking — refund not possible.', 400));
   }
+  if (!stripe) return next(new AppError('Stripe is not configured for refunds.', 503));
 
   // Process the refund via Stripe
-  const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
   let refund;
   try {
     refund = await stripe.refunds.create({
@@ -659,6 +706,42 @@ const vendorPartialRefund = catchAsync(async (req, res, next) => {
   booking.disputeResolution = 'partial_refund';
   booking.disputeReason = reason ? `Vendor refund: ${reason.trim()}` : 'Vendor-initiated partial refund';
   booking.disputeResolvedAt = new Date();
+  const referralCommission = await ReferralCommission.findOne({ booking: booking._id });
+  if (referralCommission) {
+    const originalServiceSubtotal = Number(booking.basePrice || referralCommission.serviceSubtotal);
+    const serviceRefundAmount = Math.min(
+      originalServiceSubtotal,
+      originalServiceSubtotal * amount / Math.max(Number(booking.totalPrice || 0), 0.01)
+    );
+    const refundedServiceSubtotal = Math.min(originalServiceSubtotal, referralCommission.refundedServiceSubtotal + serviceRefundAmount);
+    const remainingServiceSubtotal = Math.max(0, originalServiceSubtotal - refundedServiceSubtotal);
+    const previousAmount = referralCommission.amount;
+    const recalculatedAmount = calculateRemainingCommission({
+      remainingServiceSubtotal,
+      ratePercent: referralCommission.ratePercent,
+      minimumSubtotal: referralCommission.minimumServiceSubtotal
+    });
+    if (referralCommission.status === 'paid') {
+      referralCommission.recoverableAmount = Math.max(0, previousAmount - recalculatedAmount);
+      referralCommission.status = 'review';
+    } else {
+      referralCommission.amount = recalculatedAmount;
+      referralCommission.allocatedAmount = Math.min(referralCommission.allocatedAmount, recalculatedAmount);
+      referralCommission.status = recalculatedAmount > 0 ? 'pending' : 'canceled';
+    }
+    referralCommission.refundedServiceSubtotal = refundedServiceSubtotal;
+    referralCommission.remainingServiceSubtotal = remainingServiceSubtotal;
+    referralCommission.auditTrail.push({
+      action: 'vendor_partial_refund_reconciled',
+      actor: req.user._id,
+      reason: reason || '',
+      metadata: { refundId: refund.id, amount, remainingServiceSubtotal, previousAmount, recalculatedAmount }
+    });
+    booking.referral.serviceSubtotal = remainingServiceSubtotal;
+    booking.referral.commissionAmount = recalculatedAmount;
+    booking.referral.auditTrail.push({ action: 'vendor_partial_refund_reconciled', metadata: { refundId: refund.id, amount, remainingServiceSubtotal, recalculatedAmount } });
+    await referralCommission.save();
+  }
   await booking.save();
 
   // Notify customer

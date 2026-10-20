@@ -5,7 +5,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test src/utils/referral-program.test.js",
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "debug": "ndb src/index.js",

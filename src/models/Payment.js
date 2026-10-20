@@ -21,6 +21,11 @@ const paymentSchema = new Schema(
       min: [0, 'System Fee must be positive'],
       default: 0
     },
+    referralCommission: {
+      type: Number,
+      min: [0, 'Referral commission must be positive'],
+      default: 0
+    },
     // ── Escrow Fields ──────────────────────────────────────────────
     // held      : funds captured, sitting on platform, dispute window open
     // released  : 72h passed, no dispute → transferred to vendor

@@ -2,6 +2,7 @@ const Booking = require('../models/Bookings');
 const Listing = require('../models/ServiceListing');
 const Customer = require('../models/users/Customer');
 const User = require('../models/users/User');
+const Vendor = require('../models/users/Vendor');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const stripe = require('../config/stripe');
@@ -39,6 +40,11 @@ const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDelet
 const { moderateText } = require('../utils/mediaModeration');
 const Wallet = require('../models/Wallet');
 const BookingAgreement = require('../models/BookingAgreement');
+const ReferralAccount = require('../models/ReferralAccount');
+const ReferralAttribution = require('../models/ReferralAttribution');
+const ReferralCommission = require('../models/ReferralCommission');
+const { resolveReferralAttribution } = require('../utils/referralAttribution');
+const { calculateReferralCommission, calculateRemainingCommission } = require('../utils/referral-program');
 
 const filter = (param) => {
   const { status, startDate, endDate, cancelRequest } = param;
@@ -84,6 +90,48 @@ const filter = (param) => {
   return query;
 };
 
+const syncReferralCommissionAfterRefund = async (booking, customerRefundAmount, fullyRefunded, actorId) => {
+  if (!booking.referral?.commissionAmount) return;
+  const commission = await ReferralCommission.findOne({ booking: booking._id });
+  if (!commission) return;
+  const originalServiceSubtotal = Number(booking.basePrice || commission.serviceSubtotal);
+  const serviceRefundAmount = fullyRefunded
+    ? originalServiceSubtotal
+    : Math.min(originalServiceSubtotal, originalServiceSubtotal * Number(customerRefundAmount || 0) / Math.max(Number(booking.totalPrice || 0), 0.01));
+  const refundedServiceSubtotal = Math.min(originalServiceSubtotal, commission.refundedServiceSubtotal + serviceRefundAmount);
+  const remainingServiceSubtotal = Math.max(0, originalServiceSubtotal - refundedServiceSubtotal);
+  const recalculatedAmount = calculateRemainingCommission({
+    remainingServiceSubtotal,
+    ratePercent: commission.ratePercent,
+    minimumSubtotal: commission.minimumServiceSubtotal,
+    alreadyPaid: 0
+  });
+  const previousAmount = commission.amount;
+  commission.refundedServiceSubtotal = refundedServiceSubtotal;
+  commission.remainingServiceSubtotal = remainingServiceSubtotal;
+  if (commission.status === 'paid') {
+    commission.recoverableAmount = Math.max(0, previousAmount - recalculatedAmount);
+    commission.status = 'review';
+  } else {
+    commission.amount = recalculatedAmount;
+    commission.allocatedAmount = Math.min(commission.allocatedAmount, recalculatedAmount);
+    commission.status = fullyRefunded || booking.status === 'canceled' ? 'canceled' : 'pending';
+  }
+  commission.auditTrail.push({
+    action: fullyRefunded ? 'full_refund_reconciled' : 'partial_refund_reconciled',
+    actor: actorId,
+    reason: booking.cancelReason || '',
+    metadata: { customerRefundAmount, remainingServiceSubtotal, previousAmount, recalculatedAmount }
+  });
+  booking.referral.serviceSubtotal = remainingServiceSubtotal;
+  booking.referral.commissionAmount = recalculatedAmount;
+  booking.referral.auditTrail.push({
+    action: fullyRefunded ? 'full_refund_reconciled' : 'partial_refund_reconciled',
+    metadata: { customerRefundAmount, remainingServiceSubtotal, previousAmount, recalculatedAmount }
+  });
+  await Promise.all([commission.save(), booking.save()]);
+};
+
 const createBooking = catchAsync(async (req, res, next) => {
   const {
     service,
@@ -104,6 +152,9 @@ const createBooking = catchAsync(async (req, res, next) => {
     idFrontImage,
     idBackImage,
     agreementSnapshot,
+    referralAttributionToken,
+    referralCode,
+    referralVisitorId,
   } = req.body;
 
   const isWalletPayment = paymentSource === 'wallet';
@@ -137,7 +188,7 @@ const createBooking = catchAsync(async (req, res, next) => {
     return next(new AppError('Invalid request', 400, { errorFields }));
   }
 
-  const listingExists = await Listing.findById(service).populate('vendorId', 'SleepMode _id firstName lastName fullName');
+  const listingExists = await Listing.findById(service).populate('vendorId', 'SleepMode _id firstName lastName fullName customPricingPercentage');
   if (!listingExists) {
     return next(new AppError('Listing Not Found', 404));
   }
@@ -333,6 +384,58 @@ const createBooking = catchAsync(async (req, res, next) => {
   const taxAmount = parseFloat((basePrice * TAX_RATE / 100).toFixed(2));
   const totalWithTax = parseFloat((basePrice + taxAmount).toFixed(2));
 
+  const serverAttribution = req.referralAttributionId
+    ? await ReferralAttribution.findOne({ _id: req.referralAttributionId, status: 'active', expiresAt: { $gt: new Date() } })
+    : (await resolveReferralAttribution({
+      token: referralAttributionToken,
+      code: referralCode,
+      userId,
+      visitorId: referralVisitorId
+    }))?.attribution;
+  const referralAttribution = serverAttribution || null;
+  const vendorCommitment = referralAttribution?.vendorCommitments?.find(
+    (commitment) => String(commitment.vendor) === String(listingExists.vendorId?._id)
+  );
+  const referralOwner = referralAttribution
+    ? await Vendor.findById(referralAttribution.referrer).select('staffOf')
+    : null;
+  const isSelfReferral = referralAttribution && (
+    String(referralAttribution.referrer) === String(userId) ||
+    String(referralAttribution.referrer) === String(listingExists.vendorId?._id) ||
+    String(referralOwner?.staffOf || '') === String(listingExists.vendorId?._id)
+  );
+  let referralSnapshot = null;
+  if (referralAttribution) {
+    const minimumServiceSubtotal = vendorCommitment?.minimumServiceSubtotal ?? referralAttribution.rules.minimumServiceSubtotal;
+    const ratePercent = vendorCommitment?.ratePercent ?? referralAttribution.rules.commissionRatePercent;
+    let eligibility = 'vendor_not_participating';
+    let commissionAmount = 0;
+    if (isSelfReferral) eligibility = 'self_referral';
+    else if (vendorCommitment && basePrice < minimumServiceSubtotal) eligibility = 'below_threshold';
+    else if (vendorCommitment) {
+      eligibility = 'eligible';
+      commissionAmount = calculateReferralCommission(basePrice, ratePercent, minimumServiceSubtotal);
+    }
+    referralSnapshot = {
+      attribution: referralAttribution._id,
+      referrer: referralAttribution.referrer,
+      code: referralAttribution.code,
+      eligibility,
+      serviceSubtotal: basePrice,
+      ratePercent: vendorCommitment ? ratePercent : 0,
+      minimumServiceSubtotal,
+      completionDelayHours: referralAttribution.rules.completionDelayHours || 48,
+      commissionAmount,
+      attributionRulesVersion: referralAttribution.rules.version,
+      vendorTermsVersion: vendorCommitment?.termsVersion || null,
+      committedAt: new Date(),
+      auditTrail: [{
+        action: eligibility === 'eligible' ? 'commission_committed' : `booking_${eligibility}`,
+        metadata: { rulesVersion: referralAttribution.rules.version }
+      }]
+    };
+  }
+
   let paymentIntent = null;
   let finalTotalPrice = totalWithTax;
 
@@ -369,6 +472,15 @@ const createBooking = catchAsync(async (req, res, next) => {
     finalTotalPrice = paymentIntent.amount / 100;
   }
 
+  if (referralSnapshot) {
+    const currentPricing = await Pricing.findOne().sort({ createdAt: -1 });
+    const platformFeePercent = Number(
+      listingExists.vendorId.customPricingPercentage || currentPricing?.pricingPercentage || 0
+    );
+    referralSnapshot.platformFeePercent = platformFeePercent;
+    referralSnapshot.platformFeeAmount = Number((finalTotalPrice * platformFeePercent / 100).toFixed(2));
+  }
+
   const booking = await Booking.create({
     user: userId,
     service,
@@ -383,9 +495,42 @@ const createBooking = catchAsync(async (req, res, next) => {
     paymentIntentId: paymentIntent?.id || null,
     servicePrice: addOnServices,
     eventType: eventType || null,
-    guestsOfHonor: guestsOfHonor || []
+    guestsOfHonor: guestsOfHonor || [],
+    referral: referralSnapshot
   });
   res.locals.dataId = booking._id; // Store the ID of the created booking in res.locals
+
+  if (referralSnapshot?.eligibility === 'eligible' && referralSnapshot.commissionAmount > 0) {
+    try {
+      const referrerAccount = await ReferralAccount.findOne({ user: referralSnapshot.referrer });
+      await ReferralCommission.findOneAndUpdate(
+        { booking: booking._id },
+        {
+          $setOnInsert: {
+            booking: booking._id,
+            attribution: referralSnapshot.attribution,
+            referrer: referralSnapshot.referrer,
+            vendor: listingExists.vendorId._id,
+            paymentIntentIds: paymentIntent?.id
+              ? [paymentIntent.id]
+              : (sharedCart?.payments || []).map((payment) => payment.paymentIntentId).filter(Boolean),
+            serviceSubtotal: basePrice,
+            remainingServiceSubtotal: basePrice,
+            ratePercent: referralSnapshot.ratePercent,
+            minimumServiceSubtotal: referralSnapshot.minimumServiceSubtotal,
+            completionDelayHours: referralSnapshot.completionDelayHours,
+            amount: referralSnapshot.commissionAmount,
+            status: 'pending',
+            payoutOnboardingRequired: referrerAccount?.payoutOnboardingStatus !== 'verified',
+            auditTrail: [{ action: 'commission_committed', actor: userId, metadata: { rulesVersion: referralSnapshot.attributionRulesVersion } }]
+          }
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+    } catch (referralError) {
+      console.error('[referral] Failed to create booking commission ledger:', referralError.message);
+    }
+  }
 
   // Once every cart item for this shared-payment link has produced a
   // booking, mark it consumed so the link can't be replayed further.
@@ -433,7 +578,7 @@ const createBooking = catchAsync(async (req, res, next) => {
 
   console.log(paymentIntent, 'paymentIntent created successfully');
   if (isWalletPayment || isSharedCartPayment || (instantBookingCheck === true && paymentIntent?.status === 'succeeded')) {
-    await PayHistory.create({
+    const paymentHistory = await PayHistory.create({
       payoutId: isWalletPayment ? `wallet_${booking._id}` : (isSharedCartPayment ? `shared_cart_${booking._id}` : paymentIntent?.id),
       customerId: booking?.user,
       bookingId: booking._id,
@@ -442,8 +587,14 @@ const createBooking = catchAsync(async (req, res, next) => {
 
       status: 'Paid'
     });
+    if (referralSnapshot?.eligibility === 'eligible' && paymentHistory) {
+      await ReferralCommission.updateOne(
+        { booking: booking._id },
+        { $addToSet: { paymentHistoryTransactions: paymentHistory._id } }
+      );
+    }
     booking.status = 'booked';
-    // booking.paymentStatus = true;
+    if (referralSnapshot?.eligibility === 'eligible') booking.paymentStatus = true;
     await booking.save();
     sendNotification({
       userId: listingExists?.vendorId?._id,
@@ -569,7 +720,7 @@ const updateBookingRequestStatus = catchAsync(async (req, res, next) => {
       if (capturedPayment.status !== 'succeeded') {
         return next(new AppError('Payment capture failed', 400));
       }
-      await PayHistory.create({
+      const paymentHistory = await PayHistory.create({
         payoutId: capturedPayment?.id,
         customerId: booking?.user,
         bookingId: booking._id,
@@ -577,6 +728,13 @@ const updateBookingRequestStatus = catchAsync(async (req, res, next) => {
         totalAmount: Math.round(capturedPayment?.amount / 100),
         status: 'Paid'
       });
+      await ReferralCommission.updateOne(
+        { booking: booking._id },
+        { $addToSet: { paymentIntentIds: capturedPayment.id, paymentHistoryTransactions: paymentHistory._id } }
+      );
+    }
+    if (booking.referral?.commissionAmount > 0 && paymentIntent.status === 'succeeded') {
+      booking.paymentStatus = true;
     }
 
     // Construct Google Maps link for service location
@@ -768,6 +926,9 @@ const cancelBooking = catchAsync(async (req, res, next) => {
     { _id: id },
     { status: 'canceled', cancelReason: req.body.cancelReason }
   ).populate('service');
+  if (data?.referral?.commissionAmount > 0) {
+    await syncReferralCommissionAfterRefund(data, data.totalPrice, true, req.user._id);
+  }
   sendNotification({
     userId: booking?.service?.vendorId,
     title: 'Booking Canceled',
@@ -971,9 +1132,12 @@ const getBookingById = catchAsync(async (req, res, next) => {
     return next(new AppError('Booking not found', 404));
   }
 
+  const payment = await Payment.findOne({ booking: booking._id })
+    .select('amount systemFee referralCommission escrowStatus stripeTransferId');
+
   return res.status(200).json({
     status: 'success',
-    data: booking
+    data: { ...booking.toObject(), payment }
   });
 });
 
@@ -1373,6 +1537,7 @@ const refundAmount = catchAsync(async (req, res, next) => {
     findbooking.cancelReason = req.body.cancelReason;
     findbooking.status = 'canceled';
     await findbooking.save();
+    await syncReferralCommissionAfterRefund(findbooking, amountafterfee, true, req.user._id);
 
     // Notify customer about full refund
     const cancelReason = req.body.cancelReason || 'No reason provided';
@@ -1442,6 +1607,7 @@ const refundAmount = catchAsync(async (req, res, next) => {
     findbooking.status = 'canceled';
     findbooking.cancelReason = req.body.cancelReason;
     await findbooking.save();
+    await syncReferralCommissionAfterRefund(findbooking, amount, false, req.user._id);
 
     // Notify customer about partial refund
     const cancelReason = req.body.cancelReason || 'No reason provided';

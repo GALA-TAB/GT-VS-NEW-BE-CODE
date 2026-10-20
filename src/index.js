@@ -12,6 +12,7 @@ const { initializeSocket } = require('./utils/socket');
 // Cron jobs – uncomment if running on a persistent server (Render/Railway)
 require("./utils/updateRequest");   // marks completed bookings + creates escrow hold
 require("./utils/PayoutCrone");     // releases escrow after 72h dispute window
+require('./utils/referralPayoutCron'); // referral eligibility only; transfers remain disabled until verified funding is configured
 // require("./utils/VendorPayout"); // DISABLED – replaced by escrow-aware PayoutCrone
 // require("./utils/checkstripebalance");
 // require("./utils/autoDeleteOldPendingBookings");
