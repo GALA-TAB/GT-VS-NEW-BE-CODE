@@ -8,6 +8,7 @@ const catchAsync = require('../utils/catchAsync');
 const StripeWebhookEvent = require('../models/StripeWebhookEvent');
 const ReferralAccount = require('../models/ReferralAccount');
 const ReferralCommission = require('../models/ReferralCommission');
+const { applyRefundToReferralReward } = require('../utils/referralRewards');
 
 // Stripe Webhook Controller
 exports.stripeWebhook = catchAsync(async (req, res, next) => {
@@ -185,18 +186,22 @@ exports.stripeWebhook = catchAsync(async (req, res, next) => {
           });
         }
         await payment.save();
-        const referralCommission = await ReferralCommission.findOne({ booking: payment.booking });
-        if (referralCommission) {
-          if (dispute.status === 'lost') {
-            referralCommission.status = referralCommission.providerPayoutId ? 'review' : 'canceled';
-          } else if (referralCommission.status !== 'paid') {
-            referralCommission.status = 'pending';
+        if (dispute.status === 'lost') {
+          // The customer won the chargeback, so the booking fee is gone with the charge.
+          if (booking?.referral?.eligibility) {
+            await applyRefundToReferralReward({
+              booking,
+              fullRefund: true,
+              bookingCanceled: true,
+              source: 'chargeback_lost',
+              metadata: { disputeId: dispute.id }
+            });
           }
-          if (dispute.status === 'lost' && referralCommission.providerPayoutId) {
-            referralCommission.recoverableAmount = referralCommission.amount;
-          }
-          referralCommission.auditTrail.push({ action: 'dispute_closed', metadata: { disputeId: dispute.id, resolution: dispute.status } });
-          await referralCommission.save();
+        } else {
+          await ReferralCommission.updateOne(
+            { booking: payment.booking, status: 'paused' },
+            { $set: { status: 'pending' }, $push: { auditTrail: { action: 'dispute_closed', metadata: { disputeId: dispute.id, resolution: dispute.status } } } }
+          );
         }
         console.log('[webhook] charge.dispute.closed — status:', dispute.status, '— charge:', chargeId);
       }
@@ -214,6 +219,23 @@ exports.stripeWebhook = catchAsync(async (req, res, next) => {
           await payment.save();
           console.log('[webhook] payment_intent.succeeded — stored chargeId', latestCharge, 'for booking', pi.metadata.bookingId);
         }
+      }
+      break;
+    }
+
+    // Refunds made outside the app (e.g. the Stripe dashboard) still reduce the fee Gala Tab retains.
+    case "charge.refunded": {
+      const charge = event.data.object;
+      const payment = await Payments.findOne({ stripeChargeId: charge.id });
+      const booking = payment ? await Booking.findById(payment.booking) : null;
+      if (booking?.referral?.eligibility) {
+        await applyRefundToReferralReward({
+          booking,
+          refundedTotal: Number(charge.amount_refunded || 0) / 100,
+          fullRefund: Boolean(charge.refunded),
+          source: 'stripe_refund',
+          metadata: { chargeId: charge.id }
+        });
       }
       break;
     }

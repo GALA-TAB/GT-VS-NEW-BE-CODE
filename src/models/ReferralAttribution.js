@@ -1,19 +1,9 @@
 const { Schema, model } = require('mongoose');
 
-const vendorCommitmentSchema = new Schema(
-  {
-    vendor: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-    ratePercent: { type: Number, required: true },
-    minimumServiceSubtotal: { type: Number, required: true },
-    termsVersion: { type: String, required: true },
-    consentedAt: { type: Date, required: true }
-  },
-  { _id: false }
-);
-
 const referralAttributionSchema = new Schema(
   {
     referrer: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    invitation: { type: Schema.Types.ObjectId, ref: 'ReferralInvitation', default: null, index: true },
     code: { type: String, required: true, uppercase: true },
     tokenHash: { type: String, required: true, unique: true, index: true },
     visitorHash: { type: String, default: null },
@@ -22,12 +12,11 @@ const referralAttributionSchema = new Schema(
     rules: {
       version: { type: Number, required: true },
       termsVersion: { type: String, required: true },
-      commissionRatePercent: { type: Number, required: true },
-      minimumServiceSubtotal: { type: Number, required: true },
+      rewardAmount: { type: Number, default: null },
+      minimumPlatformFee: { type: Number, default: null },
       attributionWindowDays: { type: Number, required: true },
       completionDelayHours: { type: Number, required: true }
     },
-    vendorCommitments: { type: [vendorCommitmentSchema], default: [] },
     status: { type: String, enum: ['active', 'expired', 'invalid'], default: 'active' }
   },
   { timestamps: true }

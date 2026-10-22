@@ -4,7 +4,7 @@ const { default: mongoose } = require('mongoose');
 const Bookings = require('../models/Bookings');
 const Payments = require('../models/Payment');
 const ReferralCommission = require('../models/ReferralCommission');
-const { calculateRemainingCommission } = require('../utils/referral-program');
+const { applyRefundToReferralReward } = require('../utils/referralRewards');
 const User = require('../models/users/User');
 const APIFeatures = require('../utils/apiFeatures');
 const AppError = require('../utils/appError');
@@ -530,46 +530,20 @@ const resolveDispute = catchAsync(async (req, res, next) => {
 
   booking.inDispute = false;
   booking.disputeResolvedAt = new Date();
-  const referralCommission = await ReferralCommission.findOne({ booking: booking._id });
-  if (referralCommission) {
-    const originalServiceSubtotal = Number(booking.basePrice || referralCommission.serviceSubtotal);
-    if (resolution === 'released') {
-      if (referralCommission.status !== 'paid') referralCommission.status = 'pending';
-      referralCommission.auditTrail.push({ action: 'dispute_resolved_released', actor: req.user._id });
-    } else {
-      const customerRefund = resolution === 'refunded' ? Number(booking.totalPrice || 0) : Number(refundAmount);
-      const serviceRefundAmount = resolution === 'refunded'
-        ? Math.max(0, originalServiceSubtotal - referralCommission.refundedServiceSubtotal)
-        : Math.min(originalServiceSubtotal, originalServiceSubtotal * customerRefund / Math.max(Number(booking.totalPrice || 0), 0.01));
-      const refundedServiceSubtotal = Math.min(originalServiceSubtotal, referralCommission.refundedServiceSubtotal + serviceRefundAmount);
-      const remainingServiceSubtotal = Math.max(0, originalServiceSubtotal - refundedServiceSubtotal);
-      const recalculatedAmount = calculateRemainingCommission({
-        remainingServiceSubtotal,
-        ratePercent: referralCommission.ratePercent,
-        minimumSubtotal: referralCommission.minimumServiceSubtotal
-      });
-      const previousAmount = referralCommission.amount;
-      if (referralCommission.status === 'paid') {
-        referralCommission.recoverableAmount = Math.max(0, previousAmount - recalculatedAmount);
-        referralCommission.status = 'review';
-      } else {
-        referralCommission.amount = recalculatedAmount;
-        referralCommission.allocatedAmount = Math.min(referralCommission.allocatedAmount, recalculatedAmount);
-        referralCommission.status = resolution === 'refunded' || recalculatedAmount === 0 ? 'canceled' : 'pending';
-      }
-      referralCommission.refundedServiceSubtotal = refundedServiceSubtotal;
-      referralCommission.remainingServiceSubtotal = remainingServiceSubtotal;
-      booking.referral.serviceSubtotal = remainingServiceSubtotal;
-      booking.referral.commissionAmount = recalculatedAmount;
-      booking.referral.auditTrail.push({ action: 'dispute_refund_reconciled', metadata: { resolution, customerRefund, remainingServiceSubtotal, recalculatedAmount } });
-      referralCommission.auditTrail.push({
-        action: 'dispute_refund_reconciled',
-        actor: req.user._id,
-        reason: resolution,
-        metadata: { customerRefund, remainingServiceSubtotal, previousAmount, recalculatedAmount }
-      });
-    }
-    await referralCommission.save();
+  if (resolution === 'released') {
+    await ReferralCommission.updateOne(
+      { booking: booking._id, status: 'paused' },
+      { $set: { status: 'pending' }, $push: { auditTrail: { action: 'dispute_resolved_released', actor: req.user._id } } }
+    );
+  } else if (booking.referral?.eligibility) {
+    await applyRefundToReferralReward({
+      booking,
+      refundAmount: resolution === 'refunded' ? Number(booking.totalPrice || 0) : Number(refundAmount),
+      fullRefund: resolution === 'refunded',
+      actorId: req.user._id,
+      source: 'dispute_refund',
+      metadata: { resolution }
+    });
   }
   booking.disputeResolution = resolution;
   await booking.save();
@@ -706,41 +680,14 @@ const vendorPartialRefund = catchAsync(async (req, res, next) => {
   booking.disputeResolution = 'partial_refund';
   booking.disputeReason = reason ? `Vendor refund: ${reason.trim()}` : 'Vendor-initiated partial refund';
   booking.disputeResolvedAt = new Date();
-  const referralCommission = await ReferralCommission.findOne({ booking: booking._id });
-  if (referralCommission) {
-    const originalServiceSubtotal = Number(booking.basePrice || referralCommission.serviceSubtotal);
-    const serviceRefundAmount = Math.min(
-      originalServiceSubtotal,
-      originalServiceSubtotal * amount / Math.max(Number(booking.totalPrice || 0), 0.01)
-    );
-    const refundedServiceSubtotal = Math.min(originalServiceSubtotal, referralCommission.refundedServiceSubtotal + serviceRefundAmount);
-    const remainingServiceSubtotal = Math.max(0, originalServiceSubtotal - refundedServiceSubtotal);
-    const previousAmount = referralCommission.amount;
-    const recalculatedAmount = calculateRemainingCommission({
-      remainingServiceSubtotal,
-      ratePercent: referralCommission.ratePercent,
-      minimumSubtotal: referralCommission.minimumServiceSubtotal
+  if (booking.referral?.eligibility) {
+    await applyRefundToReferralReward({
+      booking,
+      refundAmount: amount,
+      actorId: req.user._id,
+      source: 'vendor_partial_refund',
+      metadata: { refundId: refund.id, reason: reason || '' }
     });
-    if (referralCommission.status === 'paid') {
-      referralCommission.recoverableAmount = Math.max(0, previousAmount - recalculatedAmount);
-      referralCommission.status = 'review';
-    } else {
-      referralCommission.amount = recalculatedAmount;
-      referralCommission.allocatedAmount = Math.min(referralCommission.allocatedAmount, recalculatedAmount);
-      referralCommission.status = recalculatedAmount > 0 ? 'pending' : 'canceled';
-    }
-    referralCommission.refundedServiceSubtotal = refundedServiceSubtotal;
-    referralCommission.remainingServiceSubtotal = remainingServiceSubtotal;
-    referralCommission.auditTrail.push({
-      action: 'vendor_partial_refund_reconciled',
-      actor: req.user._id,
-      reason: reason || '',
-      metadata: { refundId: refund.id, amount, remainingServiceSubtotal, previousAmount, recalculatedAmount }
-    });
-    booking.referral.serviceSubtotal = remainingServiceSubtotal;
-    booking.referral.commissionAmount = recalculatedAmount;
-    booking.referral.auditTrail.push({ action: 'vendor_partial_refund_reconciled', metadata: { refundId: refund.id, amount, remainingServiceSubtotal, recalculatedAmount } });
-    await referralCommission.save();
   }
   await booking.save();
 

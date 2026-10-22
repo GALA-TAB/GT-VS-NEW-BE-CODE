@@ -1,38 +1,42 @@
-const crypto = require('node:crypto');
 const ReferralAccount = require('../models/ReferralAccount');
 const ReferralAttribution = require('../models/ReferralAttribution');
 const ReferralCommission = require('../models/ReferralCommission');
+const ReferralInvitation = require('../models/ReferralInvitation');
 const ReferralProgramSettings = require('../models/ReferralProgramSettings');
 const Booking = require('../models/Bookings');
 const Listing = require('../models/ServiceListing');
-const Pricing = require('../models/Pricing');
 const User = require('../models/users/User');
 const stripe = require('../config/stripe');
 const { createStripeOnBoardingLink, receiveAccount } = require('../utils/stripe-utils/connect-accounts.util');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const {
-  DEFAULT_REFERRAL_RATE_PERCENT,
-  DEFAULT_MINIMUM_SERVICE_SUBTOTAL,
-  calculateReferralCommission,
-  calculateVendorNet
+  REFERRAL_RULES_MODEL,
+  REFERRAL_REWARD_AMOUNT,
+  MINIMUM_PLATFORM_FEE,
+  calculateReferralReward
 } = require('../utils/referral-program');
+const { getCurrentSettings, rewardOptionsFrom } = require('../utils/referralSettings');
 const { hashToken, createAttributionForCode } = require('../utils/referralAttribution');
+const {
+  CODE_PATTERN,
+  generateInvitationCode,
+  ensurePrimaryInvitation,
+  createInvitation: createReferralInvitation,
+  isInvitationUsable
+} = require('../utils/referralInvitations');
 
-const TERMS_VERSION = 'gala-tab-referral-2026-10-v1';
-const DEFAULT_SETTINGS = {
-  version: 1,
-  termsVersion: TERMS_VERSION,
-  enabled: true,
-  commissionRatePercent: DEFAULT_REFERRAL_RATE_PERCENT,
-  minimumServiceSubtotal: DEFAULT_MINIMUM_SERVICE_SUBTOTAL,
-  attributionWindowDays: 30,
-  completionDelayHours: 48,
-  payoutsEnabled: false
-};
+const referralUrlFor = (code) =>
+  `${String(process.env.FRONTEND_URL || '').replace(/\/+$/, '')}/?ref=${encodeURIComponent(code)}`;
 
-const getCurrentSettings = async () =>
-  (await ReferralProgramSettings.findOne().sort({ version: -1 })) || DEFAULT_SETTINGS;
+const publicSettings = (settings) => ({
+  termsVersion: settings.termsVersion,
+  enabled: settings.enabled,
+  rewardAmount: settings.rewardAmount ?? REFERRAL_REWARD_AMOUNT,
+  minimumPlatformFee: settings.minimumPlatformFee ?? MINIMUM_PLATFORM_FEE,
+  attributionWindowDays: settings.attributionWindowDays,
+  completionDelayHours: settings.completionDelayHours
+});
 
 const ensureAccount = async (userId) => {
   let account = await ReferralAccount.findOne({ user: userId });
@@ -42,10 +46,7 @@ const ensureAccount = async (userId) => {
   if (!user) throw new AppError('User not found', 404);
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      account = await ReferralAccount.create({
-        user: userId,
-        code: `GT${crypto.randomBytes(5).toString('hex').toUpperCase()}`
-      });
+      account = await ReferralAccount.create({ user: userId, code: generateInvitationCode() });
       return account;
     } catch (error) {
       if (error.code !== 11000) throw error;
@@ -57,28 +58,28 @@ const ensureAccount = async (userId) => {
   throw new AppError('Could not create a referral account', 500);
 };
 
+const canShareInvitations = (account, settings) =>
+  Boolean(account?.referrerEnabled && settings.enabled && account.referrerConsent?.termsVersion === settings.termsVersion);
+
 const getReferralOverview = catchAsync(async (req, res) => {
   const [account, settings] = await Promise.all([
     ReferralAccount.findOne({ user: req.user._id }),
     getCurrentSettings()
   ]);
-  const currentFee = await Pricing.findOne().sort({ createdAt: -1 });
-  const feePercent = Number(req.user.customPricingPercentage || currentFee?.pricingPercentage || 0);
-  const example = {
-    serviceSubtotal: 2000,
-    platformFee: Number(((2000 * feePercent) / 100).toFixed(2)),
-    commission: 100,
-    expectedVendorProceeds: calculateVendorNet(2000, feePercent, 100),
-    platformFeePercent: feePercent
-  };
+  const rewardOptions = rewardOptionsFrom(settings);
+  const shareable = canShareInvitations(account, settings);
 
-  const [records, referredBookingCount] = await Promise.all([
+  const [invitations, records, referredBookingCount] = await Promise.all([
+    account
+      ? ensurePrimaryInvitation(account).then(() => ReferralInvitation.find({ referrer: req.user._id }).sort({ createdAt: 1 }))
+      : [],
     ReferralCommission.find({ referrer: req.user._id })
-      .select('booking serviceSubtotal remainingServiceSubtotal amount status createdAt updatedAt providerPayoutId recoverableAmount')
+      .select('booking amount status createdAt updatedAt providerPayoutId providerTransferId recoverableAmount invitation canceledInvitation')
       .populate({ path: 'booking', select: 'bookingRef checkIn checkOut status' })
       .sort({ createdAt: -1 }),
     Booking.countDocuments({ 'referral.referrer': req.user._id })
   ]);
+
   const summary = { bookings: referredBookingCount, pending: 0, eligible: 0, processing: 0, paid: 0, canceled: 0, failed: 0, paused: 0, review: 0, totalEarnings: 0, paidEarnings: 0, commissions: [] };
   for (const record of records) {
     if (Object.hasOwn(summary, record.status)) summary[record.status] += 1;
@@ -88,101 +89,99 @@ const getReferralOverview = catchAsync(async (req, res) => {
   summary.commissions = records.map((record) => ({
     bookingRef: record.booking?.bookingRef || 'Booking',
     serviceDate: record.booking?.checkOut || record.booking?.checkIn || null,
-    serviceSubtotal: record.remainingServiceSubtotal ?? record.serviceSubtotal,
     amount: record.amount,
     status: record.status,
     updatedAt: record.updatedAt,
-    payoutReference: record.providerPayoutId || null,
+    payoutReference: record.providerTransferId || record.providerPayoutId || null,
     recoverableAmount: record.recoverableAmount
   }));
+
+  const invitationList = invitations.map((invitation) => ({
+    id: invitation._id,
+    code: invitation.code,
+    label: invitation.label,
+    status: invitation.status,
+    createdAt: invitation.createdAt,
+    url: shareable && invitation.status === 'active' ? referralUrlFor(invitation.code) : null
+  }));
+  const firstActive = invitationList.find((invitation) => invitation.url);
 
   res.status(200).json({
     status: 'success',
     data: {
       enrolled: Boolean(account?.referrerEnabled),
-      vendorFundingEnabled: Boolean(account?.vendorFundingEnabled),
       referrerNeedsConsent: Boolean(account?.referrerEnabled && account.referrerConsent?.termsVersion !== settings.termsVersion),
-      vendorNeedsConsent: Boolean(account?.vendorFundingEnabled && account.vendorConsent?.termsVersion !== settings.termsVersion),
-      code: account?.code || null,
-      referralUrl: account?.code && account.referrerEnabled && settings.enabled &&
-        account.referrerConsent?.termsVersion === settings.termsVersion &&
-        account.referrerConsent?.ratePercent === settings.commissionRatePercent &&
-        account.referrerConsent?.minimumServiceSubtotal === settings.minimumServiceSubtotal
-        ? `${String(process.env.FRONTEND_URL || '').replace(/\/+$/, '')}/?ref=${encodeURIComponent(account.code)}`
-        : null,
+      code: firstActive?.code || null,
+      referralUrl: firstActive?.url || null,
+      invitations: invitationList,
       payoutOnboardingStatus: account?.payoutOnboardingStatus || 'not_started',
-      currentSettings: settings,
-      example,
+      currentSettings: publicSettings(settings),
+      examples: [499, 500, 800].map((platformFee) => ({
+        platformFee,
+        reward: calculateReferralReward(platformFee, rewardOptions)
+      })),
       summary
     }
   });
 });
 
 const updateParticipation = catchAsync(async (req, res, next) => {
-  const { referrerEnabled, vendorFundingEnabled, acceptReferrerTerms, acceptVendorTerms } = req.body;
-  if ((referrerEnabled !== undefined && typeof referrerEnabled !== 'boolean') ||
-      (vendorFundingEnabled !== undefined && typeof vendorFundingEnabled !== 'boolean')) {
+  const { referrerEnabled, acceptReferrerTerms } = req.body;
+  if (referrerEnabled !== undefined && typeof referrerEnabled !== 'boolean') {
     return next(new AppError('Participation settings must be boolean values.', 400));
   }
   const settings = await getCurrentSettings();
-  if (!settings.enabled && (referrerEnabled || vendorFundingEnabled)) {
+  if (!settings.enabled && referrerEnabled) {
     return next(new AppError('The referral program is not accepting new participants.', 403));
   }
+  if (referrerEnabled === undefined) return next(new AppError('referrerEnabled is required.', 400));
+  if (referrerEnabled && acceptReferrerTerms !== true) {
+    return next(new AppError('Accept the referral terms before enrolling.', 400));
+  }
+
   const account = await ensureAccount(req.user._id);
-  const user = await User.findById(req.user._id).select('_id role');
-
-  if (referrerEnabled !== undefined) {
-    if (referrerEnabled && acceptReferrerTerms !== true) {
-      return next(new AppError('Accept the referral terms before enrolling.', 400));
-    }
-    account.referrerEnabled = Boolean(referrerEnabled);
-    if (referrerEnabled) {
-      account.referrerConsent = {
-        acceptedAt: new Date(),
-        termsVersion: settings.termsVersion,
-        ratePercent: settings.commissionRatePercent,
-        minimumServiceSubtotal: settings.minimumServiceSubtotal
-      };
-    }
-    account.consentHistory.push({
-      participantType: 'referrer',
-      enabled: Boolean(referrerEnabled),
-      acceptedAt: new Date(),
-      termsVersion: referrerEnabled ? settings.termsVersion : account.referrerConsent?.termsVersion,
-      ratePercent: referrerEnabled ? settings.commissionRatePercent : account.referrerConsent?.ratePercent,
-      minimumServiceSubtotal: referrerEnabled ? settings.minimumServiceSubtotal : account.referrerConsent?.minimumServiceSubtotal
-    });
+  account.referrerEnabled = referrerEnabled;
+  if (referrerEnabled) {
+    account.referrerConsent = { acceptedAt: new Date(), termsVersion: settings.termsVersion };
   }
-
-  if (vendorFundingEnabled !== undefined) {
-    if (user.role !== 'vendor') return next(new AppError('Only vendor accounts can fund referral commissions.', 403));
-    if (req.user.vendorRole === 'staff' || req.user.staffOf) {
-      return next(new AppError('Vendor staff cannot accept commission funding terms for a business.', 403));
-    }
-    if (vendorFundingEnabled && acceptVendorTerms !== true) {
-      return next(new AppError('Explicit vendor commission consent is required.', 400));
-    }
-    account.vendorFundingEnabled = Boolean(vendorFundingEnabled);
-    if (vendorFundingEnabled) {
-      account.vendorConsent = {
-        acceptedAt: new Date(),
-        termsVersion: settings.termsVersion,
-        ratePercent: settings.commissionRatePercent,
-        minimumServiceSubtotal: settings.minimumServiceSubtotal
-      };
-    }
-    account.consentHistory.push({
-      participantType: 'vendor',
-      enabled: Boolean(vendorFundingEnabled),
-      acceptedAt: new Date(),
-      termsVersion: vendorFundingEnabled ? settings.termsVersion : account.vendorConsent?.termsVersion,
-      ratePercent: vendorFundingEnabled ? settings.commissionRatePercent : account.vendorConsent?.ratePercent,
-      minimumServiceSubtotal: vendorFundingEnabled ? settings.minimumServiceSubtotal : account.vendorConsent?.minimumServiceSubtotal
-    });
-  }
-
+  account.consentHistory.push({
+    participantType: 'referrer',
+    enabled: referrerEnabled,
+    acceptedAt: new Date(),
+    termsVersion: referrerEnabled ? settings.termsVersion : account.referrerConsent?.termsVersion
+  });
   await account.save();
   res.status(200).json({ status: 'success', data: account });
+});
+
+const createInvitation = catchAsync(async (req, res, next) => {
+  const [account, settings] = await Promise.all([
+    ReferralAccount.findOne({ user: req.user._id }),
+    getCurrentSettings()
+  ]);
+  if (!canShareInvitations(account, settings)) {
+    return next(new AppError('Join the referral program and accept the current terms to create invitations.', 403));
+  }
+  let invitation;
+  try {
+    invitation = await createReferralInvitation({ account, label: req.body.label });
+  } catch (error) {
+    return next(error.statusCode ? new AppError(error.message, error.statusCode) : error);
+  }
+  res.status(201).json({
+    status: 'success',
+    data: { id: invitation._id, code: invitation.code, label: invitation.label, status: invitation.status, url: referralUrlFor(invitation.code) }
+  });
+});
+
+const revokeInvitation = catchAsync(async (req, res, next) => {
+  const invitation = await ReferralInvitation.findOneAndUpdate(
+    { _id: req.params.invitationId, referrer: req.user._id, status: 'active' },
+    { $set: { status: 'revoked' } },
+    { new: true }
+  );
+  if (!invitation) return next(new AppError('Only your unused invitations can be revoked.', 404));
+  res.status(200).json({ status: 'success', data: { id: invitation._id, status: invitation.status } });
 });
 
 const createAttribution = catchAsync(async (req, res, next) => {
@@ -196,10 +195,13 @@ const createAttribution = catchAsync(async (req, res, next) => {
     }
     const existing = await ReferralAttribution.findOne({ tokenHash: hashToken(existingToken), status: 'active' });
     if (existing && existing.expiresAt > new Date()) {
-      return res.status(200).json({ status: 'success', data: { token: existingToken, expiresAt: existing.expiresAt, preserved: true } });
+      const invitation = existing.invitation ? await ReferralInvitation.findById(existing.invitation) : null;
+      if (!invitation || isInvitationUsable(invitation, req.user?._id)) {
+        return res.status(200).json({ status: 'success', data: { token: existingToken, expiresAt: existing.expiresAt, preserved: true } });
+      }
     }
   }
-  if (typeof code !== 'string' || !/^GT[A-F0-9]{10}$/i.test(code.trim())) {
+  if (typeof code !== 'string' || !CODE_PATTERN.test(code.trim().toUpperCase())) {
     return next(new AppError('Invalid referral code.', 400));
   }
   const created = await createAttributionForCode(code, req.user?._id, req.body.visitorId);
@@ -223,11 +225,9 @@ const confirmServiceCompletion = catchAsync(async (req, res, next) => {
   if (!['booked', 'completed'].includes(booking.status)) {
     return next(new AppError('Only a confirmed booking can be marked complete.', 400));
   }
-  if (['canceled', 'rejected'].includes(booking.status)) {
-    return next(new AppError('Canceled or rejected bookings cannot be confirmed complete.', 400));
-  }
   const commission = await ReferralCommission.findOne({ booking: booking._id });
-  if (!commission) return next(new AppError('No referral commission is recorded for this booking.', 404));
+  if (!commission) return next(new AppError('No referral reward is recorded for this booking.', 404));
+  if (commission.status === 'canceled') return next(new AppError('The referral reward for this booking was canceled.', 400));
   if (req.user.role === 'admin' && !String(req.body.reason || '').trim()) {
     return next(new AppError('An administrator reason is required.', 400));
   }
@@ -291,32 +291,43 @@ const getPayoutOnboardingStatus = catchAsync(async (req, res, next) => {
 });
 
 const getAdminOverview = catchAsync(async (req, res) => {
-  const [settings, accounts, attributions, commissions] = await Promise.all([
+  const [settings, accounts, invitations, attributions, commissions] = await Promise.all([
     getCurrentSettings(),
-    ReferralAccount.find().select('user code referrerEnabled vendorFundingEnabled referrerConsent vendorConsent consentHistory payoutOnboardingStatus').populate('user', 'firstName lastName email role'),
+    ReferralAccount.find().select('user code referrerEnabled referrerConsent consentHistory payoutOnboardingStatus').populate('user', 'firstName lastName email role'),
+    ReferralInvitation.find().populate('referrer', 'firstName lastName email').sort({ createdAt: -1 }).limit(500),
     ReferralAttribution.find().populate('referrer', 'firstName lastName email').sort({ createdAt: -1 }).limit(500),
     ReferralCommission.find().populate('booking', 'bookingRef checkIn checkOut status paymentStatus inDispute').populate('referrer', 'firstName lastName email').populate('vendor', 'firstName lastName email').sort({ createdAt: -1 }).limit(500)
   ]);
-  res.status(200).json({ status: 'success', data: { settings, accounts, attributions, commissions } });
+  res.status(200).json({
+    status: 'success',
+    data: { settings: { ...publicSettings(settings), payoutsEnabled: Boolean(settings.payoutsEnabled), version: settings.version }, accounts, invitations, attributions, commissions }
+  });
 });
 
+// The reward amount and the platform-fee minimum are fixed program rules, so
+// administrators can only change the operating settings below.
 const updateAdminSettings = catchAsync(async (req, res, next) => {
   const current = await getCurrentSettings();
-  const { commissionRatePercent, minimumServiceSubtotal, attributionWindowDays, completionDelayHours, enabled, reason } = req.body;
+  const { attributionWindowDays, completionDelayHours, enabled, payoutsEnabled, reason } = req.body;
   if (!String(reason || '').trim()) return next(new AppError('A reason is required for program setting changes.', 400));
+  if ((enabled !== undefined && typeof enabled !== 'boolean') || (payoutsEnabled !== undefined && typeof payoutsEnabled !== 'boolean')) {
+    return next(new AppError('Enabled settings must be boolean values.', 400));
+  }
   const nextSettings = {
     version: Number(current.version || 0) + 1,
-    termsVersion: `${TERMS_VERSION}-v${Number(current.version || 0) + 1}`,
-    enabled: enabled === undefined ? current.enabled : Boolean(enabled),
-    commissionRatePercent: Number(commissionRatePercent ?? current.commissionRatePercent),
-    minimumServiceSubtotal: Number(minimumServiceSubtotal ?? current.minimumServiceSubtotal),
+    termsVersion: current.termsVersion,
+    enabled: enabled === undefined ? current.enabled : enabled,
+    rulesModel: REFERRAL_RULES_MODEL,
+    rewardAmount: REFERRAL_REWARD_AMOUNT,
+    minimumPlatformFee: MINIMUM_PLATFORM_FEE,
     attributionWindowDays: Number(attributionWindowDays ?? current.attributionWindowDays),
     completionDelayHours: Number(completionDelayHours ?? current.completionDelayHours),
-    payoutsEnabled: false,
+    payoutsEnabled: payoutsEnabled === undefined ? Boolean(current.payoutsEnabled) : payoutsEnabled,
     changedBy: req.user._id,
     changeReason: String(reason).trim()
   };
-  if (nextSettings.commissionRatePercent <= 0 || nextSettings.commissionRatePercent > 25 || nextSettings.minimumServiceSubtotal < 0 || nextSettings.attributionWindowDays < 1 || nextSettings.attributionWindowDays > 90 || nextSettings.completionDelayHours < 0 || nextSettings.completionDelayHours > 720) {
+  if (!Number.isFinite(nextSettings.attributionWindowDays) || nextSettings.attributionWindowDays < 1 || nextSettings.attributionWindowDays > 90 ||
+      !Number.isFinite(nextSettings.completionDelayHours) || nextSettings.completionDelayHours < 0 || nextSettings.completionDelayHours > 720) {
     return next(new AppError('One or more referral settings are outside the allowed range.', 400));
   }
   const saved = await ReferralProgramSettings.create(nextSettings);
@@ -327,38 +338,44 @@ const reviewCommission = catchAsync(async (req, res, next) => {
   const { action, reason } = req.body;
   if (!String(reason || '').trim()) return next(new AppError('A reason is required.', 400));
   const commission = await ReferralCommission.findById(req.params.commissionId);
-  if (!commission) return next(new AppError('Referral commission not found.', 404));
+  if (!commission) return next(new AppError('Referral reward not found.', 404));
   const actions = { pause: 'paused', review: 'review', resolve: 'pending' };
   if (!actions[action]) return next(new AppError('Invalid review action.', 400));
-  if (commission.status !== 'paid') commission.status = actions[action];
+  if (!['paid', 'canceled', 'processing'].includes(commission.status)) commission.status = actions[action];
   commission.auditTrail.push({ action: `admin_${action}`, actor: req.user._id, reason: String(reason).trim() });
   await commission.save();
   res.status(200).json({ status: 'success', data: commission });
 });
 
+// Spreadsheet applications run cells that start with these characters as formulas.
+const csvCell = (value) => {
+  const text = String(value ?? '');
+  return `"${(/^[=+\-@\t\r]/.test(text) ? `'${text}` : text).replace(/"/g, '""')}"`;
+};
+
 const exportAdminRecords = catchAsync(async (req, res) => {
-  const records = await ReferralCommission.find().populate('booking', 'bookingRef').populate('referrer', 'email').populate('vendor', 'email').sort({ createdAt: -1 });
-  const quote = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-  const rows = [['bookingRef', 'referrerEmail', 'vendorEmail', 'serviceSubtotal', 'ratePercent', 'amount', 'status', 'providerTransferId', 'providerPayoutId']];
+  const records = await ReferralCommission.find().populate('booking', 'bookingRef').populate('referrer', 'email').sort({ createdAt: -1 });
+  const rows = [['bookingRef', 'referrerEmail', 'bookingTotal', 'platformFeeAmount', 'retainedPlatformFee', 'rewardAmount', 'status', 'providerTransferId']];
   records.forEach((item) => rows.push([
     item.booking?.bookingRef,
     item.referrer?.email,
-    item.vendor?.email,
-    item.serviceSubtotal,
-    item.ratePercent,
+    item.bookingTotal,
+    item.platformFeeAmount,
+    item.retainedPlatformFee,
     item.amount,
     item.status,
-    item.providerTransferId,
-    item.providerPayoutId
+    item.providerTransferId
   ]));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="gala-tab-referrals.csv"');
-  res.status(200).send(rows.map((row) => row.map(quote).join(',')).join('\n'));
+  res.status(200).send(rows.map((row) => row.map(csvCell).join(',')).join('\n'));
 });
 
 module.exports = {
   getReferralOverview,
   updateParticipation,
+  createInvitation,
+  revokeInvitation,
   createAttribution,
   confirmServiceCompletion,
   startPayoutOnboarding,
@@ -366,6 +383,5 @@ module.exports = {
   getAdminOverview,
   updateAdminSettings,
   reviewCommission,
-  exportAdminRecords,
-  calculateReferralCommission
+  exportAdminRecords
 };

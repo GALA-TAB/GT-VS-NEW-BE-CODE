@@ -1,20 +1,26 @@
 const crypto = require('node:crypto');
 const ReferralAccount = require('../models/ReferralAccount');
 const ReferralAttribution = require('../models/ReferralAttribution');
-const ReferralProgramSettings = require('../models/ReferralProgramSettings');
-
-const TERMS_VERSION = 'gala-tab-referral-2026-10-v1';
-const DEFAULT_SETTINGS = {
-  version: 1,
-  termsVersion: TERMS_VERSION,
-  enabled: true,
-  commissionRatePercent: 5,
-  minimumServiceSubtotal: 500,
-  attributionWindowDays: 30,
-  completionDelayHours: 48
-};
+const { getCurrentSettings, rewardOptionsFrom } = require('./referralSettings');
+const { findInvitationByCode, isInvitationUsable } = require('./referralInvitations');
+const ReferralInvitation = require('../models/ReferralInvitation');
 
 const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+
+const findActiveVisitorAttribution = (visitorHash) =>
+  ReferralAttribution.findOne({ visitorHash, status: 'active', expiresAt: { $gt: new Date() } });
+
+// A visitor keeps their first valid attribution. It stops being valid once its
+// invitation can no longer be redeemed by them, which frees them to use another code.
+const preservedAttributionFor = async (visitorHash, userId) => {
+  const existing = await findActiveVisitorAttribution(visitorHash);
+  if (!existing) return null;
+  const invitation = existing.invitation ? await ReferralInvitation.findById(existing.invitation) : null;
+  if (!invitation || isInvitationUsable(invitation, userId)) return existing;
+  existing.status = 'invalid';
+  await existing.save();
+  return null;
+};
 
 const createAttributionForCode = async (code, userId, visitorId) => {
   const visitorHash = visitorId ? hashToken(String(visitorId)) : null;
@@ -23,40 +29,20 @@ const createAttributionForCode = async (code, userId, visitorId) => {
       { visitorHash, status: 'active', expiresAt: { $lte: new Date() } },
       { $set: { status: 'expired' } }
     );
-  }
-  if (visitorHash) {
-    const existing = await ReferralAttribution.findOne({
-      visitorHash,
-      status: 'active',
-      expiresAt: { $gt: new Date() }
-    });
+    const existing = await preservedAttributionFor(visitorHash, userId);
     if (existing) return { attribution: existing, token: null, preserved: true };
   }
-  const settings = (await ReferralProgramSettings.findOne().sort({ version: -1 })) || DEFAULT_SETTINGS;
+  const settings = await getCurrentSettings();
   if (!settings.enabled || !code) return null;
-  const account = await ReferralAccount.findOne({ code: String(code).trim().toUpperCase(), referrerEnabled: true });
+  const invitation = await findInvitationByCode(code);
+  if (!invitation || !isInvitationUsable(invitation, userId)) return null;
+  const account = await ReferralAccount.findOne({ user: invitation.referrer, referrerEnabled: true });
   if (
     !account ||
     String(account.user) === String(userId || '') ||
-    account.referrerConsent?.termsVersion !== settings.termsVersion ||
-    account.referrerConsent?.ratePercent !== settings.commissionRatePercent ||
-    account.referrerConsent?.minimumServiceSubtotal !== settings.minimumServiceSubtotal
+    account.referrerConsent?.termsVersion !== settings.termsVersion
   ) return null;
-  const participants = await ReferralAccount.find({ vendorFundingEnabled: true }).select('user vendorConsent');
-  const vendorCommitments = participants
-    .filter((participant) =>
-      participant.vendorConsent?.acceptedAt &&
-      participant.vendorConsent?.termsVersion === settings.termsVersion &&
-      participant.vendorConsent?.ratePercent === settings.commissionRatePercent &&
-      participant.vendorConsent?.minimumServiceSubtotal === settings.minimumServiceSubtotal
-    )
-    .map((participant) => ({
-      vendor: participant.user,
-      ratePercent: participant.vendorConsent.ratePercent,
-      minimumServiceSubtotal: participant.vendorConsent.minimumServiceSubtotal,
-      termsVersion: participant.vendorConsent.termsVersion,
-      consentedAt: participant.vendorConsent.acceptedAt
-    }));
+
   const token = crypto.randomBytes(32).toString('hex');
   const createdAt = new Date();
   const expiresAt = new Date(createdAt.getTime() + settings.attributionWindowDays * 24 * 60 * 60 * 1000);
@@ -64,7 +50,8 @@ const createAttributionForCode = async (code, userId, visitorId) => {
   try {
     attribution = await ReferralAttribution.create({
       referrer: account.user,
-      code: account.code,
+      invitation: invitation._id,
+      code: invitation.code,
       tokenHash: hashToken(token),
       visitorHash,
       createdAt,
@@ -72,16 +59,14 @@ const createAttributionForCode = async (code, userId, visitorId) => {
       rules: {
         version: settings.version,
         termsVersion: settings.termsVersion,
-        commissionRatePercent: settings.commissionRatePercent,
-        minimumServiceSubtotal: settings.minimumServiceSubtotal,
+        ...rewardOptionsFrom(settings),
         attributionWindowDays: settings.attributionWindowDays,
         completionDelayHours: settings.completionDelayHours
-      },
-      vendorCommitments
+      }
     });
   } catch (error) {
     if (error.code !== 11000 || !visitorHash) throw error;
-    attribution = await ReferralAttribution.findOne({ visitorHash, status: 'active', expiresAt: { $gt: new Date() } });
+    attribution = await findActiveVisitorAttribution(visitorHash);
     if (!attribution) throw error;
     return { attribution, token: null, preserved: true };
   }
@@ -95,14 +80,13 @@ const resolveReferralAttribution = async ({ token, code, userId, visitorId }) =>
       status: 'active',
       expiresAt: { $gt: new Date() }
     });
-    if (attribution) return { attribution, token };
+    if (attribution) {
+      const invitation = attribution.invitation ? await ReferralInvitation.findById(attribution.invitation) : null;
+      if (!invitation || isInvitationUsable(invitation, userId)) return { attribution, token };
+    }
   }
   if (visitorId) {
-    const existing = await ReferralAttribution.findOne({
-      visitorHash: hashToken(String(visitorId)),
-      status: 'active',
-      expiresAt: { $gt: new Date() }
-    });
+    const existing = await preservedAttributionFor(hashToken(String(visitorId)), userId);
     if (existing) return { attribution: existing, token: null, preserved: true };
   }
   if (!code) return null;

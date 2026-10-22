@@ -3,9 +3,7 @@ const { Schema, model } = require('mongoose');
 const consentSchema = new Schema(
   {
     acceptedAt: { type: Date, default: null },
-    termsVersion: { type: String, default: null },
-    ratePercent: { type: Number, default: null },
-    minimumServiceSubtotal: { type: Number, default: null }
+    termsVersion: { type: String, default: null }
   },
   { _id: false }
 );
@@ -13,18 +11,16 @@ const consentSchema = new Schema(
 const referralAccountSchema = new Schema(
   {
     user: { type: Schema.Types.ObjectId, ref: 'User', required: true, unique: true, index: true },
+    // The first invitation code. Additional invitations live in ReferralInvitation.
     code: { type: String, required: true, unique: true, uppercase: true, index: true },
     referrerEnabled: { type: Boolean, default: false, index: true },
-    vendorFundingEnabled: { type: Boolean, default: false, index: true },
     referrerConsent: { type: consentSchema, default: () => ({}) },
-    vendorConsent: { type: consentSchema, default: () => ({}) },
     consentHistory: [{
+      // 'vendor' entries only exist from the earlier vendor-funded program.
       participantType: { type: String, enum: ['referrer', 'vendor'], required: true },
       enabled: { type: Boolean, required: true },
       acceptedAt: { type: Date, default: Date.now },
-      termsVersion: { type: String, default: null },
-      ratePercent: { type: Number, default: null },
-      minimumServiceSubtotal: { type: Number, default: null }
+      termsVersion: { type: String, default: null }
     }],
     stripeAccountId: { type: String, trim: true, default: null },
     payoutOnboardingStatus: {

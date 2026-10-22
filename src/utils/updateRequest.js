@@ -4,7 +4,7 @@ const Booking = require('../models/Bookings');
 const sendNotification = require('./storeNotification');
 const Pricing = require('../models/Pricing');
 const Payments = require('../models/Payment');
-const ReferralCommission = require('../models/ReferralCommission');
+const { syncRewardWithFinalFee } = require('./referralRewards');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Booking Completion Cron  (runs every minute)
@@ -55,10 +55,6 @@ cron.schedule('* * * * *', async () => {
           }
         }
         amountAfterFee = booking.totalPrice - platformFee;
-        const referralCommission = booking.referral?.eligibility === 'eligible'
-          ? Number(booking.referral.commissionAmount || 0)
-          : 0;
-        amountAfterFee = Math.max(0, amountAfterFee - referralCommission);
 
         // ── 2. Escrow release timestamp (checkIn + 72h, Airbnb-style: window starts
         //          from the booking date, not checkout date) ─────────────────
@@ -78,7 +74,6 @@ cron.schedule('* * * * *', async () => {
           existingPayment.escrowReleaseAt = escrowReleaseAt;
           existingPayment.amount = amountAfterFee;
           existingPayment.systemFee = platformFee;
-          existingPayment.referralCommission = referralCommission;
           await existingPayment.save();
         } else {
           await Payments.create({
@@ -86,23 +81,16 @@ cron.schedule('* * * * *', async () => {
             vendorId: booking.service.vendorId._id.toString(),
             amount: amountAfterFee,
             systemFee: platformFee,
-            referralCommission,
             escrowStatus: 'held',
             escrowReleaseAt,
             status: 'pending'
           });
         }
 
-        if (referralCommission > 0) {
+        // Referral rewards are paid from Gala Tab's retained fee, never deducted from the vendor.
+        if (booking.referral?.eligibility === 'eligible') {
           const escrowPayment = await Payments.findOne({ booking: booking._id });
-          await ReferralCommission.updateOne(
-            { booking: booking._id, status: { $nin: ['canceled', 'paid'] } },
-            {
-              $set: { allocatedAmount: referralCommission, availableProviderFundsVerified: false },
-              $addToSet: { paymentTransactions: escrowPayment?._id },
-              $push: { auditTrail: { action: 'vendor_proceeds_allocated', metadata: { amount: referralCommission } } }
-            }
-          );
+          await syncRewardWithFinalFee({ booking, platformFee, payment: escrowPayment });
         }
 
         const releaseDate = moment(escrowReleaseAt).format('MMMM Do YYYY, h:mm a [UTC]');

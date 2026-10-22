@@ -5,6 +5,8 @@ const restrictTo = require('../middlewares/restrictTo');
 const {
   getReferralOverview,
   updateParticipation,
+  createInvitation,
+  revokeInvitation,
   createAttribution,
   confirmServiceCompletion,
   startPayoutOnboarding,
@@ -20,6 +22,8 @@ const router = express.Router();
 router.post('/attribution', rateLimit({ windowMs: 60 * 60 * 1000, max: 30 }), createAttribution);
 router.get('/me', requireAuth, restrictTo(['customer', 'vendor']), getReferralOverview);
 router.patch('/participation', requireAuth, restrictTo(['customer', 'vendor']), updateParticipation);
+router.post('/invitations', requireAuth, restrictTo(['customer', 'vendor']), rateLimit({ windowMs: 60 * 60 * 1000, max: 30 }), createInvitation);
+router.delete('/invitations/:invitationId', requireAuth, restrictTo(['customer', 'vendor']), revokeInvitation);
 router.post('/payout-onboarding', requireAuth, restrictTo(['customer', 'vendor']), startPayoutOnboarding);
 router.get('/payout-onboarding/status', requireAuth, restrictTo(['customer', 'vendor']), getPayoutOnboardingStatus);
 router.post('/bookings/:bookingId/complete', requireAuth, restrictTo(['vendor', 'admin']), confirmServiceCompletion);
