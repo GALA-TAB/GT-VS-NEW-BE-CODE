@@ -1,5 +1,5 @@
 /**
- * One-time migration for the flat-fee Refer & Earn program.
+ * One-time migration to the percentage-of-booking-fee Refer & Earn program.
  *
  * Rewards recorded under the earlier percentage program are handled like this:
  *   - paid / processing / eligible rewards, and any reward whose service completion was

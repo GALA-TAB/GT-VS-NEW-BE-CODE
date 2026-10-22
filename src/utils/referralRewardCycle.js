@@ -4,7 +4,7 @@ const Payments = require('../models/Payment');
 const ReferralAccount = require('../models/ReferralAccount');
 const ReferralCommission = require('../models/ReferralCommission');
 const stripeClient = require('../config/stripe');
-const { evaluateReferralPayoutEligibility, toCents } = require('./referral-program');
+const { evaluateReferralPayoutEligibility, toCents, REFERRAL_RULES_MODEL, FLAT_RULES_MODEL } = require('./referral-program');
 const { getCurrentSettings } = require('./referralSettings');
 const { cancelReward, claimRewardForBooking } = require('./referralRewards');
 const { markInvitationRewarded } = require('./referralInvitations');
@@ -74,7 +74,7 @@ const markEligibleRewards = async ({ now, settings, balance }) => {
   // here once service completion was already confirmed (the migration script closes the rest).
   const candidates = await ReferralCommission.find({
     $and: [
-      { $or: [{ rulesModel: 'flat_fee_v2' }, { rulesModel: null, completionConfirmedAt: { $ne: null } }] },
+      { $or: [{ rulesModel: { $in: [REFERRAL_RULES_MODEL, FLAT_RULES_MODEL] } }, { rulesModel: null, completionConfirmedAt: { $ne: null } }] },
       {
         $or: [
           { status: 'pending' },
@@ -106,6 +106,7 @@ const markEligibleRewards = async ({ now, settings, balance }) => {
         }
         continue;
       }
+      if (eligibility.rewardAmount !== commission.amount) commission.amount = eligibility.rewardAmount;
       commission.status = 'eligible';
       commission.eligibleAt = eligibility.eligibleAt;
       commission.payoutOnboardingRequired = false;

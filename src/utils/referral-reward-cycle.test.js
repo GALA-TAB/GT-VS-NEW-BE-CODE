@@ -51,7 +51,9 @@ const arrange = ({
     booking: 'bookingA',
     referrer: 'referrer1',
     invitation: 'inv1',
-    rulesModel: 'flat_fee_v2',
+    rulesModel: 'fee_percent_v3',
+    rewardPercent: 10,
+    rewardCap: 250,
     status: 'pending',
     amount: 50,
     platformFeeAmount: 500,
@@ -80,7 +82,7 @@ const arrange = ({
   };
 
   patch(ReferralProgramSettings, 'findOne', () => ({
-    sort: () => ({ lean: async () => ({ version: 2, rulesModel: 'flat_fee_v2', termsVersion: 't', enabled: true, rewardAmount: 50, minimumPlatformFee: 500, attributionWindowDays: 30, completionDelayHours: 48, payoutsEnabled }) })
+    sort: () => ({ lean: async () => ({ version: 2, rulesModel: 'fee_percent_v3', termsVersion: 't', enabled: true, rewardPercent: 10, rewardCap: 250, minimumPlatformFee: 500, attributionWindowDays: 30, completionDelayHours: 48, payoutsEnabled }) })
   }));
   patch(Booking, 'find', () => ({ select: async () => [] }));
   patch(Booking, 'findById', async () => booking);
@@ -130,6 +132,25 @@ test('a completed, paid, undisputed referral is paid exactly $50 once, from Gala
   await cycle(stripe);
   await cycle(stripe);
   assert.equal(transfers.length, 1, 'repeated cycles must not pay again');
+});
+
+test('the amount paid follows the fee Gala Tab retained, up to the cap', async () => {
+  const mid = arrange({ commission: { platformFeeAmount: 800, retainedPlatformFee: 800, amount: 50 } });
+  await cycle(mid.stripe);
+  assert.equal(mid.commission.status, 'paid');
+  assert.equal(mid.transfers[0].amount, 8000);
+  restores.splice(0).reverse().forEach((restore) => restore());
+
+  const capped = arrange({ commission: { platformFeeAmount: 6000, retainedPlatformFee: 6000, amount: 600 } });
+  await cycle(capped.stripe);
+  assert.equal(capped.transfers[0].amount, 25000);
+});
+
+test('a reward recorded as a fixed $50 is paid as $50 even if the fee is larger', async () => {
+  const { commission, transfers, stripe } = arrange({ commission: { rulesModel: 'flat_fee_v2', rewardPercent: null, retainedPlatformFee: 900, platformFeeAmount: 900 } });
+  await cycle(stripe);
+  assert.equal(commission.status, 'paid');
+  assert.equal(transfers[0].amount, 5000);
 });
 
 test('rewards stay pending, and nothing is paid, while administrators keep payouts disabled', async () => {

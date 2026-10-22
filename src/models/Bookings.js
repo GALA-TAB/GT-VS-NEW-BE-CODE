@@ -87,6 +87,8 @@ const BookingSchema = new Schema(
         default: null
       },
       rewardAmount: { type: Number, default: 0, min: 0 },
+      rewardPercent: { type: Number, default: null },
+      rewardCap: { type: Number, default: null },
       minimumPlatformFee: { type: Number, default: 0, min: 0 },
       completionDelayHours: { type: Number, default: 48, min: 0 },
       platformFeePercent: { type: Number, default: 0, min: 0 },

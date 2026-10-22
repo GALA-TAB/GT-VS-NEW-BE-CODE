@@ -1,23 +1,29 @@
 const ReferralProgramSettings = require('../models/ReferralProgramSettings');
-const { REFERRAL_REWARD_AMOUNT, MINIMUM_PLATFORM_FEE, REFERRAL_RULES_MODEL } = require('./referral-program');
+const {
+  REFERRAL_REWARD_PERCENT,
+  REFERRAL_REWARD_CAP,
+  MINIMUM_PLATFORM_FEE,
+  REFERRAL_RULES_MODEL
+} = require('./referral-program');
 
-const TERMS_VERSION = 'gala-tab-referral-2026-10-v2';
+const TERMS_VERSION = 'gala-tab-referral-2026-10-v3';
 
 const DEFAULT_SETTINGS = {
   version: 1,
   termsVersion: TERMS_VERSION,
   enabled: true,
   rulesModel: REFERRAL_RULES_MODEL,
-  rewardAmount: REFERRAL_REWARD_AMOUNT,
+  rewardPercent: REFERRAL_REWARD_PERCENT,
+  rewardCap: REFERRAL_REWARD_CAP,
   minimumPlatformFee: MINIMUM_PLATFORM_FEE,
   attributionWindowDays: 30,
   completionDelayHours: 48,
   payoutsEnabled: false
 };
 
-// Settings saved under the earlier percentage-based rules are replaced by a new
-// flat-fee version. Their window/delay/enabled/payout values carry over; the
-// percentage and booking-total threshold do not.
+// Settings saved under an earlier rule set (percentage of the service subtotal, or the
+// fixed $50 reward) are replaced by a new version of the current rules. Their window,
+// delay, enabled, and payout values carry over; the old reward rules do not.
 const getCurrentSettings = async () => {
   const latest = await ReferralProgramSettings.findOne().sort({ version: -1 }).lean();
   if (!latest) return { ...DEFAULT_SETTINGS };
@@ -27,12 +33,13 @@ const getCurrentSettings = async () => {
     termsVersion: TERMS_VERSION,
     enabled: latest.enabled !== false,
     rulesModel: REFERRAL_RULES_MODEL,
-    rewardAmount: REFERRAL_REWARD_AMOUNT,
+    rewardPercent: REFERRAL_REWARD_PERCENT,
+    rewardCap: REFERRAL_REWARD_CAP,
     minimumPlatformFee: MINIMUM_PLATFORM_FEE,
     attributionWindowDays: latest.attributionWindowDays || DEFAULT_SETTINGS.attributionWindowDays,
     completionDelayHours: latest.completionDelayHours ?? DEFAULT_SETTINGS.completionDelayHours,
     payoutsEnabled: Boolean(latest.payoutsEnabled),
-    changeReason: 'Replaced percentage-based rewards with the flat platform-fee reward.'
+    changeReason: 'Replaced earlier reward rules with a percentage of the retained booking fee.'
   };
   try {
     return (await ReferralProgramSettings.create(migrated)).toObject();
@@ -43,7 +50,8 @@ const getCurrentSettings = async () => {
 };
 
 const rewardOptionsFrom = (settings) => ({
-  rewardAmount: settings?.rewardAmount ?? REFERRAL_REWARD_AMOUNT,
+  rewardPercent: settings?.rewardPercent ?? REFERRAL_REWARD_PERCENT,
+  rewardCap: settings?.rewardCap ?? REFERRAL_REWARD_CAP,
   minimumPlatformFee: settings?.minimumPlatformFee ?? MINIMUM_PLATFORM_FEE
 });
 

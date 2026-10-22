@@ -1,10 +1,16 @@
-// Flat-fee referral program: the referrer earns REFERRAL_REWARD_AMOUNT when Gala Tab
-// retains at least MINIMUM_PLATFORM_FEE in booking fees from ONE referred booking.
-// The threshold applies to Gala Tab's booking-fee revenue, never to the booking total
-// or the vendor's payout, and fees from different bookings are never combined.
-const REFERRAL_REWARD_AMOUNT = 50;
+// Referral program: the referrer earns REFERRAL_REWARD_PERCENT of the booking fee Gala Tab
+// RETAINS from ONE referred booking (capped at REFERRAL_REWARD_CAP), and only when that
+// retained fee is at least MINIMUM_PLATFORM_FEE. The percentage and the minimum apply to
+// Gala Tab's booking-fee revenue, never to the booking total or the vendor's payout, and
+// fees from different bookings are never combined.
+const REFERRAL_REWARD_PERCENT = 10;
+const REFERRAL_REWARD_CAP = 250;
 const MINIMUM_PLATFORM_FEE = 500;
-const REFERRAL_RULES_MODEL = 'flat_fee_v2';
+const REFERRAL_RULES_MODEL = 'fee_percent_v3';
+// Rewards recorded earlier as a fixed $50 keep their amount.
+const FLAT_RULES_MODEL = 'flat_fee_v2';
+
+const isFeeBasedModel = (model) => model === REFERRAL_RULES_MODEL || model === FLAT_RULES_MODEL;
 
 const toCents = (amount) => Math.round((Number(amount) + Number.EPSILON) * 100);
 const fromCents = (cents) => Number((cents / 100).toFixed(2));
@@ -31,11 +37,30 @@ const calculateRetainedPlatformFee = ({ totalPrice, platformFee, refundedAmount 
 
 const calculateReferralReward = (
   retainedPlatformFee,
-  { rewardAmount = REFERRAL_REWARD_AMOUNT, minimumPlatformFee = MINIMUM_PLATFORM_FEE } = {}
+  {
+    rewardPercent = REFERRAL_REWARD_PERCENT,
+    rewardCap = REFERRAL_REWARD_CAP,
+    minimumPlatformFee = MINIMUM_PLATFORM_FEE
+  } = {}
 ) => {
   const retainedCents = toCents(retainedPlatformFee || 0);
   if (!Number.isFinite(retainedCents) || retainedCents < toCents(minimumPlatformFee)) return 0;
-  return fromCents(toCents(rewardAmount));
+  const percentCents = Math.round((retainedCents * Number(rewardPercent)) / 100);
+  return fromCents(Math.min(percentCents, toCents(rewardCap)));
+};
+
+// A reward is recalculated from the retained fee using the rate and cap it was created
+// with. Rewards recorded as a fixed amount keep that amount while the fee stays eligible.
+const calculateRewardForCommission = (commission, retainedPlatformFee) => {
+  const minimumPlatformFee = commission.minimumPlatformFee ?? MINIMUM_PLATFORM_FEE;
+  if (commission.rewardPercent != null) {
+    return calculateReferralReward(retainedPlatformFee, {
+      rewardPercent: commission.rewardPercent,
+      rewardCap: commission.rewardCap ?? REFERRAL_REWARD_CAP,
+      minimumPlatformFee
+    });
+  }
+  return toCents(retainedPlatformFee || 0) >= toCents(minimumPlatformFee) ? Number(commission.amount || 0) : 0;
 };
 
 const evaluateReferralPayoutEligibility = ({
@@ -49,15 +74,11 @@ const evaluateReferralPayoutEligibility = ({
   if (['canceled', 'rejected'].includes(booking.status)) return { eligible: false, reason: 'booking_canceled' };
   if (booking.inDispute) return { eligible: false, reason: 'dispute_unresolved' };
   if (booking.cancelRequest) return { eligible: false, reason: 'refund_unresolved' };
-  if (commission.rulesModel === REFERRAL_RULES_MODEL) {
+  let rewardAmount = commission.amount;
+  if (isFeeBasedModel(commission.rulesModel)) {
     const retained = Number(commission.retainedPlatformFee ?? commission.platformFeeAmount ?? 0);
-    const rewardOptions = {
-      rewardAmount: commission.amount,
-      minimumPlatformFee: commission.minimumPlatformFee ?? MINIMUM_PLATFORM_FEE
-    };
-    if (calculateReferralReward(retained, rewardOptions) <= 0) {
-      return { eligible: false, reason: 'platform_fee_below_threshold' };
-    }
+    rewardAmount = calculateRewardForCommission(commission, retained);
+    if (rewardAmount <= 0) return { eligible: false, reason: 'platform_fee_below_threshold' };
   }
   if (!commission.completionConfirmedAt || new Date(booking.checkOut) > now) {
     return { eligible: false, reason: 'completion_not_confirmed' };
@@ -78,17 +99,21 @@ const evaluateReferralPayoutEligibility = ({
   if (!commission.availableFundsVerified) {
     return { eligible: false, reason: 'funds_unavailable', eligibleAt: new Date(eligibleAt) };
   }
-  return { eligible: true, reason: null, eligibleAt: new Date(eligibleAt) };
+  return { eligible: true, reason: null, eligibleAt: new Date(eligibleAt), rewardAmount };
 };
 
 module.exports = {
-  REFERRAL_REWARD_AMOUNT,
+  REFERRAL_REWARD_PERCENT,
+  REFERRAL_REWARD_CAP,
   MINIMUM_PLATFORM_FEE,
   REFERRAL_RULES_MODEL,
+  FLAT_RULES_MODEL,
+  isFeeBasedModel,
   toCents,
   fromCents,
   calculatePlatformFee,
   calculateRetainedPlatformFee,
   calculateReferralReward,
+  calculateRewardForCommission,
   evaluateReferralPayoutEligibility
 };

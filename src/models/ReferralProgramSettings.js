@@ -5,8 +5,10 @@ const referralProgramSettingsSchema = new Schema(
     version: { type: Number, required: true, unique: true },
     termsVersion: { type: String, required: true },
     enabled: { type: Boolean, default: true },
-    rulesModel: { type: String, default: 'flat_fee_v2' },
-    rewardAmount: { type: Number, required: true, min: 0 },
+    rulesModel: { type: String, default: 'fee_percent_v3' },
+    rewardPercent: { type: Number, required: true, min: 0, max: 100 },
+    rewardCap: { type: Number, required: true, min: 0 },
+    rewardAmount: { type: Number, default: null }, // fixed amount from the earlier flat-fee version
     minimumPlatformFee: { type: Number, required: true, min: 0 },
     attributionWindowDays: { type: Number, required: true, min: 1, max: 90 },
     completionDelayHours: { type: Number, required: true, min: 0, max: 720 },

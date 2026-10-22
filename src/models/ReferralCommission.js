@@ -11,7 +11,7 @@ const auditEntrySchema = new Schema(
   { _id: false }
 );
 
-// The reward ledger: one record per rewarded booking. `amount` is the flat reward.
+// The reward ledger: one record per rewarded booking. `amount` is the reward payable.
 // Records created under the earlier percentage program have no `rulesModel`; their
 // amounts are kept untouched.
 const referralCommissionSchema = new Schema(
@@ -34,6 +34,8 @@ const referralCommissionSchema = new Schema(
     refundedAmount: { type: Number, default: 0, min: 0 },
     retainedPlatformFee: { type: Number, default: 0, min: 0 },
     minimumPlatformFee: { type: Number, default: null },
+    rewardPercent: { type: Number, default: null },
+    rewardCap: { type: Number, default: null },
     // Legacy percentage-program fields, kept for already-recorded rewards.
     serviceSubtotal: { type: Number, default: 0, min: 0 },
     remainingServiceSubtotal: { type: Number, default: 0, min: 0 },

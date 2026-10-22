@@ -2,11 +2,12 @@ const ReferralAccount = require('../models/ReferralAccount');
 const ReferralCommission = require('../models/ReferralCommission');
 const User = require('../models/users/User');
 const {
-  MINIMUM_PLATFORM_FEE,
   REFERRAL_RULES_MODEL,
+  isFeeBasedModel,
   calculatePlatformFee,
   calculateRetainedPlatformFee,
-  calculateReferralReward
+  calculateReferralReward,
+  calculateRewardForCommission
 } = require('./referral-program');
 const { rewardOptionsFrom } = require('./referralSettings');
 const {
@@ -37,8 +38,9 @@ const buildReferralSnapshot = async ({
   deps = {}
 }) => {
   const { UserModel = User, findInvitation = findInvitationByCode, newCustomerCheck = isNewCustomer } = deps;
-  const rewardRules = rewardOptionsFrom(attribution.rules?.rewardAmount != null ? attribution.rules : settings);
+  const rewardRules = rewardOptionsFrom(attribution.rules?.rewardPercent != null ? attribution.rules : settings);
   const platformFeeAmount = calculatePlatformFee(finalTotalPrice, platformFeePercent);
+  const expectedReward = calculateReferralReward(platformFeeAmount, rewardRules);
   const invitation = attribution.invitation
     ? { _id: attribution.invitation }
     : await findInvitation(attribution.code);
@@ -47,7 +49,7 @@ const buildReferralSnapshot = async ({
   let eligibility = 'eligible';
   if (!invitation) eligibility = 'invitation_unavailable';
   else if (isSelfReferral({ referrer: referrer || { _id: attribution.referrer }, user, vendorId })) eligibility = 'self_referral';
-  else if (calculateReferralReward(platformFeeAmount, rewardRules) <= 0) eligibility = 'below_threshold';
+  else if (expectedReward <= 0) eligibility = 'below_threshold';
   else if (!(await newCustomerCheck({ userId: user._id, attributedAt: attribution.createdAt }))) eligibility = 'not_new_customer';
 
   return {
@@ -56,7 +58,9 @@ const buildReferralSnapshot = async ({
     referrer: attribution.referrer,
     code: attribution.code,
     eligibility,
-    rewardAmount: eligibility === 'eligible' ? rewardRules.rewardAmount : 0,
+    rewardAmount: eligibility === 'eligible' ? expectedReward : 0,
+    rewardPercent: rewardRules.rewardPercent,
+    rewardCap: rewardRules.rewardCap,
     minimumPlatformFee: rewardRules.minimumPlatformFee,
     completionDelayHours: attribution.rules?.completionDelayHours || settings?.completionDelayHours || 48,
     platformFeePercent: Number(platformFeePercent || 0),
@@ -106,6 +110,8 @@ const claimRewardForBooking = async ({ booking, vendorId, paymentIntentIds = [] 
       platformFeeAmount: snapshot.platformFeeAmount,
       retainedPlatformFee: snapshot.platformFeeAmount,
       minimumPlatformFee: snapshot.minimumPlatformFee,
+      rewardPercent: snapshot.rewardPercent,
+      rewardCap: snapshot.rewardCap,
       completionDelayHours: snapshot.completionDelayHours,
       amount: snapshot.rewardAmount,
       status: 'pending',
@@ -138,14 +144,46 @@ const cancelReward = async (commission, { reason, actor = null, metadata = {} })
   if (invitationId) await releaseInvitation({ invitationId, bookingId: commission.booking });
 };
 
-const flagPaidRewardForReview = (commission, { reason, actor, metadata }) => {
-  commission.recoverableAmount = commission.amount;
-  commission.status = 'review';
-  commission.auditTrail.push({ action: 'paid_reward_needs_recovery_review', reason, actor, metadata });
+const isPaidOrInFlight = (commission) => ['paid', 'processing'].includes(commission.status);
+
+// Brings the reward in line with the fee Gala Tab now retains. An unpaid reward is
+// recalculated (or canceled when the fee no longer qualifies or the booking is canceled).
+// A reward already paid is never rewritten: any excess is flagged for recovery review.
+const settleRewardAfterFeeChange = async (commission, booking, { retained, bookingCanceled = false, reason, actor = null, metadata = {} }) => {
+  const newAmount = bookingCanceled ? 0 : calculateRewardForCommission(commission, retained);
+  const previousAmount = commission.amount;
+  const audit = { ...metadata, retained, previousAmount, newAmount };
+
+  if (newAmount <= 0) {
+    if (isPaidOrInFlight(commission)) {
+      commission.recoverableAmount = previousAmount;
+      commission.status = 'review';
+      commission.auditTrail.push({ action: 'paid_reward_needs_recovery_review', reason, actor, metadata: audit });
+      await commission.save();
+    } else if (commission.status !== 'canceled') {
+      await cancelReward(commission, { reason, actor, metadata: audit });
+    }
+    return;
+  }
+  if (newAmount !== previousAmount) {
+    if (isPaidOrInFlight(commission)) {
+      if (newAmount < previousAmount) {
+        commission.recoverableAmount = previousAmount - newAmount;
+        commission.status = 'review';
+        commission.auditTrail.push({ action: 'paid_reward_needs_recovery_review', reason: 'retained_platform_fee_reduced', actor, metadata: audit });
+      }
+    } else {
+      commission.amount = newAmount;
+      commission.auditTrail.push({ action: 'reward_recalculated', reason, actor, metadata: audit });
+      if (booking.referral) booking.referral.rewardAmount = newAmount;
+    }
+  }
+  if (!isPaidOrInFlight(commission)) commission.allocatedAmount = commission.amount;
+  await commission.save();
 };
 
-// Recomputes the booking fee Gala Tab actually retains after a refund and cancels
-// the reward if it falls under the minimum or the booking itself is canceled.
+// Recomputes the booking fee Gala Tab actually retains after a refund, then settles the
+// reward against it.
 const applyRefundToReferralReward = async ({
   booking,
   refundAmount = 0,
@@ -160,7 +198,7 @@ const applyRefundToReferralReward = async ({
   if (!commission) return null;
   const audit = { source, refundAmount, fullRefund, ...metadata };
 
-  if (commission.rulesModel !== REFERRAL_RULES_MODEL) {
+  if (!isFeeBasedModel(commission.rulesModel)) {
     commission.auditTrail.push({ action: 'refund_recorded_on_earlier_reward', actor: actorId, metadata: audit });
     await commission.save();
     return commission;
@@ -187,23 +225,13 @@ const applyRefundToReferralReward = async ({
     booking.referral.retainedPlatformFee = retained;
     booking.referral.auditTrail.push({ action: `${source}_reconciled`, metadata: { ...audit, retained } });
   }
-  const stillQualifies =
-    !bookingCanceled &&
-    calculateReferralReward(retained, {
-      rewardAmount: commission.amount,
-      minimumPlatformFee: commission.minimumPlatformFee ?? MINIMUM_PLATFORM_FEE
-    }) > 0;
-  const reason = bookingCanceled ? 'booking_canceled' : 'retained_platform_fee_below_minimum';
-
-  if (stillQualifies) {
-    commission.auditTrail.push({ action: `${source}_reconciled`, actor: actorId, metadata: { ...audit, retained } });
-    await commission.save();
-  } else if (['paid', 'processing'].includes(commission.status)) {
-    flagPaidRewardForReview(commission, { reason, actor: actorId, metadata: { ...audit, retained } });
-    await commission.save();
-  } else if (commission.status !== 'canceled') {
-    await cancelReward(commission, { reason, actor: actorId, metadata: { ...audit, retained } });
-  }
+  await settleRewardAfterFeeChange(commission, booking, {
+    retained,
+    bookingCanceled,
+    reason: bookingCanceled ? 'booking_canceled' : 'retained_platform_fee_changed',
+    actor: actorId,
+    metadata: audit
+  });
   await booking.save();
   return commission;
 };
@@ -211,7 +239,7 @@ const applyRefundToReferralReward = async ({
 // Called when the completion job fixes the booking's final platform fee.
 const syncRewardWithFinalFee = async ({ booking, platformFee, payment }) => {
   const commission = await ReferralCommission.findOne({ booking: booking._id });
-  if (!commission || commission.rulesModel !== REFERRAL_RULES_MODEL) return null;
+  if (!commission || !isFeeBasedModel(commission.rulesModel)) return null;
   const retained = calculateRetainedPlatformFee({
     totalPrice: booking.totalPrice,
     platformFee,
@@ -222,24 +250,12 @@ const syncRewardWithFinalFee = async ({ booking, platformFee, payment }) => {
   if (payment?._id && !commission.paymentTransactions.some((id) => String(id) === String(payment._id))) {
     commission.paymentTransactions.push(payment._id);
   }
-  const qualifies =
-    calculateReferralReward(retained, {
-      rewardAmount: commission.amount,
-      minimumPlatformFee: commission.minimumPlatformFee ?? MINIMUM_PLATFORM_FEE
-    }) > 0;
-  if (!qualifies) {
-    if (['paid', 'processing'].includes(commission.status)) {
-      flagPaidRewardForReview(commission, { reason: 'final_platform_fee_below_minimum', actor: null, metadata: { retained } });
-      await commission.save();
-    } else if (commission.status !== 'canceled') {
-      await cancelReward(commission, { reason: 'final_platform_fee_below_minimum', metadata: { retained } });
-    }
-  } else {
-    // The reward is set aside from the booking fee Gala Tab keeps, not from the vendor's payout.
-    commission.allocatedAmount = commission.amount;
-    commission.auditTrail.push({ action: 'reward_set_aside_from_platform_fee', metadata: { platformFee, retained } });
-    await commission.save();
-  }
+  // The reward is set aside from the booking fee Gala Tab keeps, not from the vendor's payout.
+  await settleRewardAfterFeeChange(commission, booking, {
+    retained,
+    reason: 'final_platform_fee',
+    metadata: { source: 'completion', platformFee }
+  });
   if (booking.referral) {
     booking.referral.platformFeeAmount = platformFee;
     booking.referral.retainedPlatformFee = retained;

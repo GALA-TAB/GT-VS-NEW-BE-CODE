@@ -12,6 +12,8 @@ const referralAttributionSchema = new Schema(
     rules: {
       version: { type: Number, required: true },
       termsVersion: { type: String, required: true },
+      rewardPercent: { type: Number, default: null },
+      rewardCap: { type: Number, default: null },
       rewardAmount: { type: Number, default: null },
       minimumPlatformFee: { type: Number, default: null },
       attributionWindowDays: { type: Number, required: true },

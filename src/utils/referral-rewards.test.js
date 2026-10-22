@@ -62,6 +62,8 @@ const makeBooking = (id, user, overrides = {}) => ({
     attribution: 'attr1',
     referrer: 'referrer1',
     rewardAmount: 50,
+    rewardPercent: 10,
+    rewardCap: 250,
     minimumPlatformFee: 500,
     platformFeeAmount: 500,
     retainedPlatformFee: 500,
@@ -95,10 +97,10 @@ const attribution = {
   referrer: 'referrer1',
   code: 'GTAAAAAAAAAA',
   createdAt: new Date('2026-01-01'),
-  rules: { version: 2, rewardAmount: 50, minimumPlatformFee: 500 }
+  rules: { version: 3, rewardPercent: 10, rewardCap: 250, minimumPlatformFee: 500 }
 };
 const customer = { _id: 'customer1', email: 'guest@example.com' };
-const settings = { rewardAmount: 50, minimumPlatformFee: 500, completionDelayHours: 48 };
+const settings = { rewardPercent: 10, rewardCap: 250, minimumPlatformFee: 500, completionDelayHours: 48 };
 const referrerLookup = (referrer) => ({ findById: () => ({ select: async () => referrer }) });
 const snapshotFor = (overrides = {}, deps = {}) =>
   buildReferralSnapshot({
@@ -131,10 +133,23 @@ test('a $499.99 platform fee earns nothing, even on a large booking', async () =
   assert.equal(bigButLowFee.eligibility, 'below_threshold');
 });
 
-test('an $800 platform fee earns the same flat $50', async () => {
+test('an $800 platform fee earns 10%, $80', async () => {
   const snapshot = await snapshotFor({ finalTotalPrice: 8000 });
   assert.equal(snapshot.eligibility, 'eligible');
-  assert.equal(snapshot.rewardAmount, 50);
+  assert.equal(snapshot.rewardAmount, 80);
+  assert.equal(snapshot.rewardPercent, 10);
+  assert.equal(snapshot.rewardCap, 250);
+});
+
+test('the reward is capped at $250 however large the fee', async () => {
+  assert.equal((await snapshotFor({ finalTotalPrice: 25000 })).rewardAmount, 250);
+  assert.equal((await snapshotFor({ finalTotalPrice: 500000 })).rewardAmount, 250);
+});
+
+test('an attribution made under the earlier fixed-$50 rules uses the current rate and cap', async () => {
+  const legacy = { ...attribution, rules: { version: 2, rewardAmount: 50, minimumPlatformFee: 500 } };
+  const snapshot = await snapshotFor({ attribution: legacy, finalTotalPrice: 8000 });
+  assert.equal(snapshot.rewardAmount, 80);
 });
 
 test('self-referrals are rejected by account, vendor, staff, and matching email', async () => {
@@ -219,6 +234,61 @@ const withReward = async (bookingOverrides = {}) => {
   return { booking, commission };
 };
 
+const withLargeReward = async () => {
+  store = createStore({ invitations: [newInvitation()] });
+  const booking = makeBooking('bookingA', 'customer1', { totalPrice: 8000 });
+  Object.assign(booking.referral, { platformFeeAmount: 800, retainedPlatformFee: 800, rewardAmount: 80 });
+  const commission = await claimRewardForBooking({ booking, vendorId: 'vendor1' });
+  return { booking, commission };
+};
+
+test('a partial refund that lowers the retained fee lowers the unpaid reward with it', async () => {
+  const { booking, commission } = await withLargeReward();
+  assert.equal(commission.amount, 80);
+  await applyRefundToReferralReward({ booking, refundAmount: 7300, source: 'partial_refund' }); // vendor share is $7,200
+  assert.equal(commission.retainedPlatformFee, 700);
+  assert.equal(commission.amount, 70);
+  assert.equal(commission.status, 'pending');
+  assert.equal(booking.referral.rewardAmount, 70);
+});
+
+test('a refund taken from the vendor share leaves the reward unchanged', async () => {
+  const { booking, commission } = await withLargeReward();
+  await applyRefundToReferralReward({ booking, refundAmount: 7200, source: 'vendor_partial_refund' });
+  assert.equal(commission.amount, 80);
+});
+
+test('a refund after a paid reward flags only the excess for recovery review', async () => {
+  const { booking, commission } = await withLargeReward();
+  commission.status = 'paid';
+  await applyRefundToReferralReward({ booking, refundAmount: 7300, source: 'chargeback_partial' });
+  assert.equal(commission.status, 'review');
+  assert.equal(commission.amount, 80);
+  assert.equal(commission.recoverableAmount, 10);
+});
+
+test('a refund that keeps a paid reward unchanged does not flag it', async () => {
+  const { booking, commission } = await withLargeReward();
+  commission.status = 'paid';
+  await applyRefundToReferralReward({ booking, refundAmount: 100, source: 'partial_refund' });
+  assert.equal(commission.status, 'paid');
+  assert.equal(commission.recoverableAmount ?? 0, 0);
+});
+
+test('a reward recorded as a fixed $50 keeps its amount through refunds that leave the fee eligible', async () => {
+  const { booking, commission } = await withReward();
+  commission.rulesModel = 'flat_fee_v2';
+  commission.rewardPercent = null;
+  await applyRefundToReferralReward({ booking, refundAmount: 4750, source: 'partial_refund' }); // retained $250
+  assert.equal(commission.status, 'canceled');
+  const second = await withReward();
+  second.commission.rulesModel = 'flat_fee_v2';
+  second.commission.rewardPercent = null;
+  await applyRefundToReferralReward({ booking: second.booking, refundAmount: 4500, source: 'partial_refund' });
+  assert.equal(second.commission.amount, 50);
+  assert.equal(second.commission.status, 'pending');
+});
+
 test('a refund taken from the vendor share keeps the $50 reward', async () => {
   const { booking, commission } = await withReward();
   await applyRefundToReferralReward({ booking, refundAmount: 4500, source: 'vendor_partial_refund' });
@@ -293,6 +363,14 @@ test('the final platform fee is checked again when the booking completes', async
   const { booking, commission } = await withReward();
   await syncRewardWithFinalFee({ booking, platformFee: 499.99, payment: { _id: 'pay1' } });
   assert.equal(commission.status, 'canceled');
+});
+
+test('the final platform fee sets the reward amount at completion', async () => {
+  const { booking, commission } = await withReward();
+  await syncRewardWithFinalFee({ booking, platformFee: 800, payment: { _id: 'pay1' } });
+  assert.equal(commission.amount, 80);
+  assert.equal(commission.allocatedAmount, 80);
+  assert.equal(booking.referral.rewardAmount, 80);
 });
 
 test('the reward is set aside from the platform fee, not the vendor payout', async () => {

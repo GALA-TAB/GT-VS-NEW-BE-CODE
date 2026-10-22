@@ -1,27 +1,47 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  REFERRAL_REWARD_AMOUNT,
+  REFERRAL_REWARD_PERCENT,
+  REFERRAL_REWARD_CAP,
   MINIMUM_PLATFORM_FEE,
   calculatePlatformFee,
   calculateRetainedPlatformFee,
   calculateReferralReward,
+  calculateRewardForCommission,
   evaluateReferralPayoutEligibility
 } = require('./referral-program');
 
-test('program constants are a flat $50 reward at a $500 platform-fee minimum', () => {
-  assert.equal(REFERRAL_REWARD_AMOUNT, 50);
+test('program constants: 10% of the retained fee, capped at $250, with a $500 minimum fee', () => {
+  assert.equal(REFERRAL_REWARD_PERCENT, 10);
+  assert.equal(REFERRAL_REWARD_CAP, 250);
   assert.equal(MINIMUM_PLATFORM_FEE, 500);
 });
 
-test('the $500 threshold is measured on Gala Tab booking-fee revenue, with a flat $50 reward', () => {
+test('the $500 minimum is measured on Gala Tab booking-fee revenue', () => {
+  assert.equal(calculateReferralReward(0), 0);
   assert.equal(calculateReferralReward(499), 0);
   assert.equal(calculateReferralReward(499.99), 0);
   assert.equal(calculateReferralReward(500), 50);
   assert.equal(calculateReferralReward(500.01), 50);
-  assert.equal(calculateReferralReward(800), 50);
-  assert.equal(calculateReferralReward(25000), 50);
-  assert.equal(calculateReferralReward(0), 0);
+});
+
+test('the reward is 10% of the retained fee', () => {
+  assert.equal(calculateReferralReward(800), 80);
+  assert.equal(calculateReferralReward(1234.56), 123.46);
+  assert.equal(calculateReferralReward(2000), 200);
+});
+
+test('the reward is capped at $250', () => {
+  assert.equal(calculateReferralReward(2500), 250);
+  assert.equal(calculateReferralReward(2500.01), 250);
+  assert.equal(calculateReferralReward(5000), 250);
+  assert.equal(calculateReferralReward(100000), 250);
+});
+
+test('a custom rate and cap are honoured', () => {
+  assert.equal(calculateReferralReward(1000, { rewardPercent: 5, rewardCap: 40 }), 40);
+  assert.equal(calculateReferralReward(600, { rewardPercent: 5, rewardCap: 40 }), 30);
+  assert.equal(calculateReferralReward(499, { rewardPercent: 50, rewardCap: 1000 }), 0);
 });
 
 test('a large booking total or vendor payout does not qualify unless the fee does', () => {
@@ -30,6 +50,20 @@ test('a large booking total or vendor payout does not qualify unless the fee doe
   assert.equal(calculateReferralReward(fee), 0);
   assert.equal(calculateReferralReward(calculatePlatformFee(5000, 10)), 50); // exactly $500 fee
   assert.equal(calculateReferralReward(calculatePlatformFee(4999.9, 10)), 0); // $499.99 fee
+});
+
+test('a reward is recalculated from the rate and cap it was created with', () => {
+  const reward = { amount: 80, rewardPercent: 10, rewardCap: 250, minimumPlatformFee: 500 };
+  assert.equal(calculateRewardForCommission(reward, 800), 80);
+  assert.equal(calculateRewardForCommission(reward, 650), 65);
+  assert.equal(calculateRewardForCommission(reward, 499.99), 0);
+  assert.equal(calculateRewardForCommission({ ...reward, rewardPercent: 5, rewardCap: 20 }, 2000), 20);
+});
+
+test('rewards recorded as a fixed $50 keep that amount while the fee stays eligible', () => {
+  const fixed = { amount: 50, rewardPercent: null, minimumPlatformFee: 500 };
+  assert.equal(calculateRewardForCommission(fixed, 2000), 50);
+  assert.equal(calculateRewardForCommission(fixed, 499), 0);
 });
 
 test('platform fee is rounded to cents without floating point drift', () => {
@@ -66,7 +100,9 @@ test('a one-cent fee refund drops a $500 fee below the reward minimum', () => {
 const eligibleCase = (overrides = {}) => ({
   booking: { status: 'completed', checkIn: new Date('2026-01-01'), checkOut: new Date('2026-01-02'), totalPrice: 5000, paymentStatus: true, inDispute: false, cancelRequest: false },
   commission: {
-    rulesModel: 'flat_fee_v2',
+    rulesModel: 'fee_percent_v3',
+    rewardPercent: 10,
+    rewardCap: 250,
     completionConfirmedAt: new Date('2026-01-03T00:00:00Z'),
     amount: 50,
     platformFeeAmount: 500,
@@ -83,7 +119,15 @@ const withBooking = (patch) => eligibleCase({ booking: { ...eligibleCase().booki
 const withCommission = (patch) => eligibleCase({ commission: { ...eligibleCase().commission, ...patch } });
 
 test('a reward is released only when every condition is met', () => {
-  assert.equal(evaluateReferralPayoutEligibility(eligibleCase()).eligible, true);
+  const result = evaluateReferralPayoutEligibility(eligibleCase());
+  assert.equal(result.eligible, true);
+  assert.equal(result.rewardAmount, 50);
+});
+
+test('the amount released follows the retained fee', () => {
+  assert.equal(evaluateReferralPayoutEligibility(withCommission({ retainedPlatformFee: 800, amount: 80 })).rewardAmount, 80);
+  assert.equal(evaluateReferralPayoutEligibility(withCommission({ retainedPlatformFee: 3000, amount: 250 })).rewardAmount, 250);
+  assert.equal(evaluateReferralPayoutEligibility(withCommission({ retainedPlatformFee: 600, amount: 80 })).rewardAmount, 60);
 });
 
 test('release is blocked until the service completion is confirmed', () => {

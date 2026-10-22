@@ -12,7 +12,8 @@ const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const {
   REFERRAL_RULES_MODEL,
-  REFERRAL_REWARD_AMOUNT,
+  REFERRAL_REWARD_PERCENT,
+  REFERRAL_REWARD_CAP,
   MINIMUM_PLATFORM_FEE,
   calculateReferralReward
 } = require('../utils/referral-program');
@@ -32,7 +33,8 @@ const referralUrlFor = (code) =>
 const publicSettings = (settings) => ({
   termsVersion: settings.termsVersion,
   enabled: settings.enabled,
-  rewardAmount: settings.rewardAmount ?? REFERRAL_REWARD_AMOUNT,
+  rewardPercent: settings.rewardPercent ?? REFERRAL_REWARD_PERCENT,
+  rewardCap: settings.rewardCap ?? REFERRAL_REWARD_CAP,
   minimumPlatformFee: settings.minimumPlatformFee ?? MINIMUM_PLATFORM_FEE,
   attributionWindowDays: settings.attributionWindowDays,
   completionDelayHours: settings.completionDelayHours
@@ -116,7 +118,7 @@ const getReferralOverview = catchAsync(async (req, res) => {
       invitations: invitationList,
       payoutOnboardingStatus: account?.payoutOnboardingStatus || 'not_started',
       currentSettings: publicSettings(settings),
-      examples: [499, 500, 800].map((platformFee) => ({
+      examples: [499, 500, 800, 2500, 5000].map((platformFee) => ({
         platformFee,
         reward: calculateReferralReward(platformFee, rewardOptions)
       })),
@@ -304,11 +306,11 @@ const getAdminOverview = catchAsync(async (req, res) => {
   });
 });
 
-// The reward amount and the platform-fee minimum are fixed program rules, so
-// administrators can only change the operating settings below.
+// The platform-fee minimum is a fixed program rule. Administrators can tune the reward
+// percentage and cap; each booking keeps the rate and cap in force when it was made.
 const updateAdminSettings = catchAsync(async (req, res, next) => {
   const current = await getCurrentSettings();
-  const { attributionWindowDays, completionDelayHours, enabled, payoutsEnabled, reason } = req.body;
+  const { rewardPercent, rewardCap, attributionWindowDays, completionDelayHours, enabled, payoutsEnabled, reason } = req.body;
   if (!String(reason || '').trim()) return next(new AppError('A reason is required for program setting changes.', 400));
   if ((enabled !== undefined && typeof enabled !== 'boolean') || (payoutsEnabled !== undefined && typeof payoutsEnabled !== 'boolean')) {
     return next(new AppError('Enabled settings must be boolean values.', 400));
@@ -318,7 +320,8 @@ const updateAdminSettings = catchAsync(async (req, res, next) => {
     termsVersion: current.termsVersion,
     enabled: enabled === undefined ? current.enabled : enabled,
     rulesModel: REFERRAL_RULES_MODEL,
-    rewardAmount: REFERRAL_REWARD_AMOUNT,
+    rewardPercent: Number(rewardPercent ?? current.rewardPercent ?? REFERRAL_REWARD_PERCENT),
+    rewardCap: Number(rewardCap ?? current.rewardCap ?? REFERRAL_REWARD_CAP),
     minimumPlatformFee: MINIMUM_PLATFORM_FEE,
     attributionWindowDays: Number(attributionWindowDays ?? current.attributionWindowDays),
     completionDelayHours: Number(completionDelayHours ?? current.completionDelayHours),
@@ -326,6 +329,9 @@ const updateAdminSettings = catchAsync(async (req, res, next) => {
     changedBy: req.user._id,
     changeReason: String(reason).trim()
   };
+  if (!(nextSettings.rewardPercent > 0 && nextSettings.rewardPercent <= 25) || !(nextSettings.rewardCap > 0 && nextSettings.rewardCap <= 1000)) {
+    return next(new AppError('Reward percentage must be above 0 and at most 25, and the cap above 0 and at most 1000.', 400));
+  }
   if (!Number.isFinite(nextSettings.attributionWindowDays) || nextSettings.attributionWindowDays < 1 || nextSettings.attributionWindowDays > 90 ||
       !Number.isFinite(nextSettings.completionDelayHours) || nextSettings.completionDelayHours < 0 || nextSettings.completionDelayHours > 720) {
     return next(new AppError('One or more referral settings are outside the allowed range.', 400));
