@@ -415,6 +415,7 @@ const createBooking = catchAsync(async (req, res, next) => {
         user,
         vendorId: listingExists.vendorId?._id,
         finalTotalPrice,
+        taxAmount,
         platformFeePercent,
         settings: await getCurrentSettings()
       });

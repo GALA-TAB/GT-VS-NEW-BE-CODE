@@ -1,7 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const ReferralCommission = require('../models/ReferralCommission');
-const ReferralInvitation = require('../models/ReferralInvitation');
 const ReferralAccount = require('../models/ReferralAccount');
 const {
   buildReferralSnapshot,
@@ -9,33 +8,30 @@ const {
   applyRefundToReferralReward,
   syncRewardWithFinalFee
 } = require('./referralRewards');
-const { markInvitationRewarded } = require('./referralInvitations');
 
-// ── In-memory stand-ins for the Mongo collections ─────────────────────────────
-// They evaluate the same conditional filters the code sends, one JS turn at a time,
-// so each conditional update behaves atomically like Mongo's single-document update.
+// ── In-memory stand-in for the commission ledger ──────────────────────────────
+// It enforces the same unique indexes the model declares (booking, invitation, customerClaim)
+// and evaluates the filters the code sends, so duplicate prevention is exercised for real.
 const same = (a, b) => String(a ?? null) === String(b ?? null);
 const matches = (doc, filter) =>
-  Object.entries(filter).every(([key, value]) =>
-    (key === '$or' ? value.some((alternative) => matches(doc, alternative)) : same(doc[key], value)));
+  Object.entries(filter).every(([key, value]) => {
+    if (value && typeof value === 'object' && '$ne' in value) return !same(doc[key], value.$ne);
+    return same(doc[key], value);
+  });
 
-const createStore = ({ invitations = [] } = {}) => {
-  const store = { invitations, commissions: [], restore: [] };
+const createStore = ({ commissions = [], skipPrecheck = false } = {}) => {
+  const store = { commissions, restore: [] };
   const patch = (target, name, implementation) => {
     const original = target[name];
     target[name] = implementation;
     store.restore.push(() => { target[name] = original; });
   };
-  patch(ReferralInvitation, 'findOneAndUpdate', async (filter, update) => {
-    const doc = store.invitations.find((candidate) => matches(candidate, filter));
-    if (!doc) return null;
-    Object.assign(doc, update.$set);
-    return { ...doc };
-  });
   patch(ReferralAccount, 'findOne', async () => ({ payoutOnboardingStatus: 'verified' }));
   patch(ReferralCommission, 'create', async (data) => {
     const duplicate = store.commissions.some((existing) =>
-      same(existing.booking, data.booking) || (data.invitation && same(existing.invitation, data.invitation)));
+      same(existing.booking, data.booking) ||
+      (data.invitation && same(existing.invitation, data.invitation)) ||
+      (data.customerClaim && same(existing.customerClaim, data.customerClaim)));
     if (duplicate) throw Object.assign(new Error('E11000 duplicate key'), { code: 11000 });
     const commission = {
       paymentTransactions: [],
@@ -48,6 +44,8 @@ const createStore = ({ invitations = [] } = {}) => {
     return commission;
   });
   patch(ReferralCommission, 'findOne', async (filter) => store.commissions.find((c) => matches(c, filter)) || null);
+  patch(ReferralCommission, 'exists', async (filter) =>
+    (skipPrecheck ? null : store.commissions.find((c) => matches(c, filter)) || null));
   return store;
 };
 
@@ -61,10 +59,12 @@ const makeBooking = (id, user, overrides = {}) => ({
     invitation: 'inv1',
     attribution: 'attr1',
     referrer: 'referrer1',
+    rulesModel: 'fee_percent_v4',
     rewardAmount: 50,
     rewardPercent: 10,
     rewardCap: 250,
-    minimumPlatformFee: 500,
+    minimumPlatformFee: 0,
+    platformFeePercent: 10,
     platformFeeAmount: 500,
     retainedPlatformFee: 500,
     completionDelayHours: 48,
@@ -72,15 +72,6 @@ const makeBooking = (id, user, overrides = {}) => ({
     auditTrail: []
   },
   save: async () => {},
-  ...overrides
-});
-
-const newInvitation = (overrides = {}) => ({
-  _id: 'inv1',
-  referrer: 'referrer1',
-  status: 'active',
-  referredUser: null,
-  claimedBooking: null,
   ...overrides
 });
 
@@ -100,8 +91,11 @@ const attribution = {
   rules: { version: 3, rewardPercent: 10, rewardCap: 250, minimumPlatformFee: 500 }
 };
 const customer = { _id: 'customer1', email: 'guest@example.com' };
-const settings = { rewardPercent: 10, rewardCap: 250, minimumPlatformFee: 500, completionDelayHours: 48 };
+const settings = { termsVersion: 'terms-v4', completionDelayHours: 48 };
 const referrerLookup = (referrer) => ({ findById: () => ({ select: async () => referrer }) });
+const accountLookup = (termsVersion = 'terms-v4') => ({
+  findOne: () => ({ select: async () => ({ referrerConsent: { termsVersion } }) })
+});
 const snapshotFor = (overrides = {}, deps = {}) =>
   buildReferralSnapshot({
     attribution,
@@ -112,44 +106,60 @@ const snapshotFor = (overrides = {}, deps = {}) =>
     settings,
     deps: {
       UserModel: referrerLookup({ _id: 'referrer1', email: 'referrer@example.com' }),
+      AccountModel: accountLookup(),
       newCustomerCheck: async () => true,
+      rewardedCheck: async () => false,
       ...deps
     },
     ...overrides
   });
 
-test('a booking whose platform fee is exactly $500 is a reward candidate', async () => {
-  const snapshot = await snapshotFor();
-  assert.equal(snapshot.eligibility, 'eligible');
-  assert.equal(snapshot.rewardAmount, 50);
-  assert.equal(snapshot.platformFeeAmount, 500);
+test('the reward is 10% of the booking fee, with no minimum fee', async () => {
+  const small = await snapshotFor({ finalTotalPrice: 100 }); // $10 fee
+  assert.equal(small.eligibility, 'eligible');
+  assert.equal(small.platformFeeAmount, 10);
+  assert.equal(small.rewardAmount, 1);
+  assert.equal((await snapshotFor()).rewardAmount, 50);
+  assert.equal((await snapshotFor({ finalTotalPrice: 8000 })).rewardAmount, 80);
+  assert.equal((await snapshotFor({ finalTotalPrice: 4999.9 })).rewardAmount, 50);
 });
 
-test('a $499.99 platform fee earns nothing, even on a large booking', async () => {
-  const justUnder = await snapshotFor({ finalTotalPrice: 4999.9 });
-  assert.equal(justUnder.eligibility, 'below_threshold');
-  assert.equal(justUnder.rewardAmount, 0);
-  const bigButLowFee = await snapshotFor({ finalTotalPrice: 50000, platformFeePercent: 0.9 });
-  assert.equal(bigButLowFee.eligibility, 'below_threshold');
+test('the reward is calculated from the booking fee, not the booking total', async () => {
+  const snapshot = await snapshotFor({ finalTotalPrice: 50000, platformFeePercent: 0.9 }); // $450 fee
+  assert.equal(snapshot.platformFeeAmount, 450);
+  assert.equal(snapshot.rewardAmount, 45);
 });
 
-test('an $800 platform fee earns 10%, $80', async () => {
-  const snapshot = await snapshotFor({ finalTotalPrice: 8000 });
-  assert.equal(snapshot.eligibility, 'eligible');
-  assert.equal(snapshot.rewardAmount, 80);
-  assert.equal(snapshot.rewardPercent, 10);
-  assert.equal(snapshot.rewardCap, 250);
+test('the reward is rounded to the nearest cent', async () => {
+  assert.equal((await snapshotFor({ finalTotalPrice: 123.45 })).rewardAmount, 1.24); // fee 12.35 -> 1.235 rounds half up
+  assert.equal((await snapshotFor({ finalTotalPrice: 1234.56 })).rewardAmount, 12.35); // fee 123.46 -> 12.346
 });
 
-test('the reward is capped at $250 however large the fee', async () => {
+test('the reward never exceeds $250', async () => {
   assert.equal((await snapshotFor({ finalTotalPrice: 25000 })).rewardAmount, 250);
   assert.equal((await snapshotFor({ finalTotalPrice: 500000 })).rewardAmount, 250);
 });
 
-test('an attribution made under the earlier fixed-$50 rules uses the current rate and cap', async () => {
+test('a booking with a 0% booking fee does not qualify', async () => {
+  const snapshot = await snapshotFor({ platformFeePercent: 0 });
+  assert.equal(snapshot.eligibility, 'zero_fee');
+  assert.equal(snapshot.rewardAmount, 0);
+  assert.equal((await snapshotFor({ platformFeePercent: undefined })).eligibility, 'zero_fee');
+});
+
+test('taxes are excluded from the booking fee', async () => {
+  const snapshot = await snapshotFor({ finalTotalPrice: 1088.75, taxAmount: 88.75 });
+  assert.equal(snapshot.platformFeeAmount, 100);
+  assert.equal(snapshot.rewardAmount, 10);
+  assert.equal(snapshot.taxAmount, 88.75);
+});
+
+test('an attribution made under earlier terms follows the current rules', async () => {
   const legacy = { ...attribution, rules: { version: 2, rewardAmount: 50, minimumPlatformFee: 500 } };
-  const snapshot = await snapshotFor({ attribution: legacy, finalTotalPrice: 8000 });
-  assert.equal(snapshot.rewardAmount, 80);
+  const snapshot = await snapshotFor({ attribution: legacy, finalTotalPrice: 100 });
+  assert.equal(snapshot.eligibility, 'eligible');
+  assert.equal(snapshot.rewardAmount, 1);
+  assert.equal(snapshot.rulesModel, 'fee_percent_v4');
 });
 
 test('self-referrals are rejected by account, vendor, staff, and matching email', async () => {
@@ -169,16 +179,49 @@ test('only a new customer qualifies', async () => {
   assert.equal(snapshot.rewardAmount, 0);
 });
 
+test('a customer who already produced a reward does not qualify again', async () => {
+  const snapshot = await snapshotFor({}, { rewardedCheck: async () => true });
+  assert.equal(snapshot.eligibility, 'already_rewarded');
+  assert.equal(snapshot.rewardAmount, 0);
+});
+
+test('the referrer must have accepted the current program terms', async () => {
+  const snapshot = await snapshotFor({}, { AccountModel: accountLookup('terms-v3') });
+  assert.equal(snapshot.eligibility, 'terms_not_accepted');
+  assert.equal(snapshot.rewardAmount, 0);
+});
+
 test('an unknown invitation is not rewarded', async () => {
   const snapshot = await snapshotFor({ attribution: { ...attribution, invitation: null } }, { findInvitation: async () => null });
   assert.equal(snapshot.eligibility, 'invitation_unavailable');
 });
 
-// ── Duplicate redemption ──────────────────────────────────────────────────────
-test('two bookings racing for one invitation produce exactly one reward', async () => {
-  store = createStore({ invitations: [newInvitation()] });
+// ── One reward per referred customer ──────────────────────────────────────────
+test('one referral link can reward the referrer for several different new customers', async () => {
+  store = createStore();
+  const first = await claimRewardForBooking({ booking: makeBooking('bookingA', 'customer1'), vendorId: 'vendor1' });
+  const second = await claimRewardForBooking({ booking: makeBooking('bookingB', 'customer2'), vendorId: 'vendor1' });
+  assert.ok(first && second);
+  assert.equal(store.commissions.length, 2);
+  assert.equal(store.commissions[0].sourceInvitation, 'inv1');
+  assert.equal(store.commissions[1].sourceInvitation, 'inv1');
+});
+
+test('the reward is recorded against the referred customer with the current rules', async () => {
+  store = createStore();
+  const commission = await claimRewardForBooking({ booking: makeBooking('bookingA', 'customer1'), vendorId: 'vendor1' });
+  assert.equal(commission.customerClaim, 'customer1');
+  assert.equal(commission.referredUser, 'customer1');
+  assert.equal(commission.rulesModel, 'fee_percent_v4');
+  assert.equal(commission.minimumPlatformFee, 0);
+  assert.equal(commission.status, 'pending');
+  assert.equal(commission.amount, 50);
+});
+
+test('two bookings by the same customer racing for a reward produce exactly one', async () => {
+  store = createStore();
   const first = makeBooking('bookingA', 'customer1');
-  const second = makeBooking('bookingB', 'customer2');
+  const second = makeBooking('bookingB', 'customer1');
   const results = await Promise.all([
     claimRewardForBooking({ booking: first, vendorId: 'vendor1' }),
     claimRewardForBooking({ booking: second, vendorId: 'vendor1' })
@@ -186,12 +229,32 @@ test('two bookings racing for one invitation produce exactly one reward', async 
   assert.equal(results.filter(Boolean).length, 1);
   assert.equal(store.commissions.length, 1);
   const loser = results[0] ? second : first;
-  assert.equal(loser.referral.eligibility, 'invitation_unavailable');
+  assert.equal(loser.referral.eligibility, 'already_rewarded');
   assert.equal(loser.referral.rewardAmount, 0);
 });
 
+test('the database index alone stops a second reward when the pre-check is raced past', async () => {
+  store = createStore({ skipPrecheck: true });
+  const first = makeBooking('bookingA', 'customer1');
+  const second = makeBooking('bookingB', 'customer1');
+  assert.ok(await claimRewardForBooking({ booking: first, vendorId: 'vendor1' }));
+  assert.equal(await claimRewardForBooking({ booking: second, vendorId: 'vendor1' }), null);
+  assert.equal(store.commissions.length, 1);
+  assert.equal(second.referral.eligibility, 'already_rewarded');
+});
+
+test('using both a link and a code for one customer still produces one reward', async () => {
+  store = createStore();
+  const viaLink = makeBooking('bookingA', 'customer1');
+  const viaCode = makeBooking('bookingB', 'customer1');
+  viaCode.referral.invitation = 'inv2';
+  await claimRewardForBooking({ booking: viaLink, vendorId: 'vendor1' });
+  assert.equal(await claimRewardForBooking({ booking: viaCode, vendorId: 'vendor1' }), null);
+  assert.equal(store.commissions.length, 1);
+});
+
 test('retrying the same booking does not create a second reward', async () => {
-  store = createStore({ invitations: [newInvitation()] });
+  store = createStore();
   const booking = makeBooking('bookingA', 'customer1');
   await claimRewardForBooking({ booking, vendorId: 'vendor1' });
   const retry = await claimRewardForBooking({ booking, vendorId: 'vendor1' });
@@ -199,43 +262,72 @@ test('retrying the same booking does not create a second reward', async () => {
   assert.equal(retry.booking, 'bookingA');
 });
 
-test('a second booking by the same customer cannot reuse an invitation that holds a reward', async () => {
-  store = createStore({ invitations: [newInvitation()] });
-  await claimRewardForBooking({ booking: makeBooking('bookingA', 'customer1'), vendorId: 'vendor1' });
-  const later = makeBooking('bookingB', 'customer1');
-  assert.equal(await claimRewardForBooking({ booking: later, vendorId: 'vendor1' }), null);
-  assert.equal(store.commissions.length, 1);
-});
-
-test('a paid invitation can never produce another reward', async () => {
-  store = createStore({ invitations: [newInvitation()] });
-  await claimRewardForBooking({ booking: makeBooking('bookingA', 'customer1'), vendorId: 'vendor1' });
-  await markInvitationRewarded({ invitationId: 'inv1', bookingId: 'bookingA' });
-  assert.equal(store.invitations[0].status, 'rewarded');
+test('a later booking cannot earn again once the first reward is paid', async () => {
+  store = createStore();
+  const first = await claimRewardForBooking({ booking: makeBooking('bookingA', 'customer1'), vendorId: 'vendor1' });
+  first.status = 'paid';
   assert.equal(await claimRewardForBooking({ booking: makeBooking('bookingB', 'customer1'), vendorId: 'vendor1' }), null);
-  assert.equal(await claimRewardForBooking({ booking: makeBooking('bookingC', 'customer2'), vendorId: 'vendor1' }), null);
   assert.equal(store.commissions.length, 1);
 });
 
-test('a failed ledger write frees the invitation again', async () => {
-  store = createStore({ invitations: [newInvitation()] });
+test('a reward from the earlier terms also uses up the customer', async () => {
+  store = createStore({
+    commissions: [{ booking: 'old1', referredUser: 'customer1', invitation: 'inv9', status: 'paid', rulesModel: 'fee_percent_v3', amount: 80 }]
+  });
+  const booking = makeBooking('bookingB', 'customer1');
+  assert.equal(await claimRewardForBooking({ booking, vendorId: 'vendor1' }), null);
+  assert.equal(booking.referral.eligibility, 'already_rewarded');
+  assert.equal(store.commissions.length, 1);
+});
+
+test('a nonqualifying booking does not use up the customer: no ledger entry is made', async () => {
+  store = createStore();
+  const zeroFee = makeBooking('bookingA', 'customer1');
+  Object.assign(zeroFee.referral, { eligibility: 'zero_fee', rewardAmount: 0, platformFeeAmount: 0 });
+  assert.equal(await claimRewardForBooking({ booking: zeroFee, vendorId: 'vendor1' }), null);
+  assert.equal(store.commissions.length, 0);
+  const qualifying = await claimRewardForBooking({ booking: makeBooking('bookingB', 'customer1'), vendorId: 'vendor1' });
+  assert.equal(qualifying.booking, 'bookingB');
+  assert.equal(qualifying.amount, 50);
+});
+
+test('a nonqualifying booking is evaluated without consulting or consuming any reward', async () => {
+  store = createStore();
+  const nonQualifying = await snapshotFor({ platformFeePercent: 0 }, { rewardedCheck: async () => { throw new Error('must not be reached'); } });
+  assert.equal(nonQualifying.eligibility, 'zero_fee');
+  const next = await snapshotFor();
+  assert.equal(next.eligibility, 'eligible');
+});
+
+test('a failed ledger write leaves the booking a candidate for the repair job', async () => {
+  store = createStore();
   ReferralCommission.create = async () => { throw new Error('database unavailable'); };
   const booking = makeBooking('bookingA', 'customer1');
   assert.equal(await claimRewardForBooking({ booking, vendorId: 'vendor1' }), null);
-  assert.equal(store.invitations[0].status, 'active');
-  assert.equal(booking.referral.eligibility, 'invitation_unavailable');
+  assert.equal(booking.referral.eligibility, 'eligible');
+  assert.equal(store.commissions.length, 0);
+});
+
+test('a booking evaluated before the updated terms keeps the earlier rules when its reward is recorded', async () => {
+  store = createStore();
+  const booking = makeBooking('bookingA', 'customer1');
+  delete booking.referral.rulesModel;
+  booking.referral.minimumPlatformFee = 500;
+  const commission = await claimRewardForBooking({ booking, vendorId: 'vendor1' });
+  assert.equal(commission.rulesModel, 'fee_percent_v3');
+  assert.equal(commission.minimumPlatformFee, 500);
 });
 
 // ── Refunds ───────────────────────────────────────────────────────────────────
 const withReward = async (bookingOverrides = {}) => {
-  store = createStore({ invitations: [newInvitation()] });
+  store = createStore();
   const booking = makeBooking('bookingA', 'customer1', bookingOverrides);
   const commission = await claimRewardForBooking({ booking, vendorId: 'vendor1' });
   return { booking, commission };
 };
 
 const withLargeReward = async () => {
-  store = createStore({ invitations: [newInvitation()] });
+  store = createStore();
   const booking = makeBooking('bookingA', 'customer1', { totalPrice: 8000 });
   Object.assign(booking.referral, { platformFeeAmount: 800, retainedPlatformFee: 800, rewardAmount: 80 });
   const commission = await claimRewardForBooking({ booking, vendorId: 'vendor1' });
@@ -252,10 +344,29 @@ test('a partial refund that lowers the retained fee lowers the unpaid reward wit
   assert.equal(booking.referral.rewardAmount, 70);
 });
 
+test('a small retained fee still earns a proportionally small reward after a refund', async () => {
+  const { booking, commission } = await withLargeReward();
+  await applyRefundToReferralReward({ booking, refundAmount: 7999, source: 'partial_refund' }); // $1 of fee left
+  assert.equal(commission.retainedPlatformFee, 1);
+  assert.equal(commission.amount, 0.1);
+  assert.equal(commission.status, 'pending');
+});
+
 test('a refund taken from the vendor share leaves the reward unchanged', async () => {
   const { booking, commission } = await withLargeReward();
   await applyRefundToReferralReward({ booking, refundAmount: 7200, source: 'vendor_partial_refund' });
   assert.equal(commission.amount, 80);
+});
+
+test('refunds are measured without taxes', async () => {
+  store = createStore();
+  const booking = makeBooking('bookingA', 'customer1', { totalPrice: 1088.75 });
+  Object.assign(booking.referral, { taxAmount: 88.75, platformFeeAmount: 100, retainedPlatformFee: 100, rewardAmount: 10 });
+  const commission = await claimRewardForBooking({ booking, vendorId: 'vendor1' });
+  assert.equal(commission.taxAmount, 88.75);
+  await applyRefundToReferralReward({ booking, refundAmount: 1000, source: 'partial_refund' });
+  assert.equal(commission.retainedPlatformFee, 81.52);
+  assert.equal(commission.amount, 8.15);
 });
 
 test('a refund after a paid reward flags only the excess for recovery review', async () => {
@@ -275,54 +386,16 @@ test('a refund that keeps a paid reward unchanged does not flag it', async () =>
   assert.equal(commission.recoverableAmount ?? 0, 0);
 });
 
-test('a reward recorded as a fixed $50 keeps its amount through refunds that leave the fee eligible', async () => {
-  const { booking, commission } = await withReward();
-  commission.rulesModel = 'flat_fee_v2';
-  commission.rewardPercent = null;
-  await applyRefundToReferralReward({ booking, refundAmount: 4750, source: 'partial_refund' }); // retained $250
-  assert.equal(commission.status, 'canceled');
-  const second = await withReward();
-  second.commission.rulesModel = 'flat_fee_v2';
-  second.commission.rewardPercent = null;
-  await applyRefundToReferralReward({ booking: second.booking, refundAmount: 4500, source: 'partial_refund' });
-  assert.equal(second.commission.amount, 50);
-  assert.equal(second.commission.status, 'pending');
-});
-
-test('a refund taken from the vendor share keeps the $50 reward', async () => {
-  const { booking, commission } = await withReward();
-  await applyRefundToReferralReward({ booking, refundAmount: 4500, source: 'vendor_partial_refund' });
-  assert.equal(commission.status, 'pending');
-  assert.equal(commission.retainedPlatformFee, 500);
-  assert.equal(commission.amount, 50);
-});
-
-test('a refund that cuts the retained fee below $500 cancels the reward and frees the invitation', async () => {
-  const { booking, commission } = await withReward();
-  await applyRefundToReferralReward({ booking, refundAmount: 4500.01, source: 'partial_refund' });
-  assert.equal(commission.status, 'canceled');
-  assert.equal(commission.retainedPlatformFee, 499.99);
-  assert.equal(commission.invitation, null);
-  assert.equal(store.invitations[0].status, 'active');
-  assert.equal(store.invitations[0].claimedBooking, null);
-});
-
-test('after a canceled reward only the same referred customer can earn the invitation', async () => {
-  const { booking } = await withReward();
-  await applyRefundToReferralReward({ booking, fullRefund: true, bookingCanceled: true, source: 'full_refund' });
-  assert.equal(store.commissions[0].status, 'canceled');
-  assert.equal(await claimRewardForBooking({ booking: makeBooking('bookingB', 'customer2'), vendorId: 'vendor1' }), null);
-  const retry = await claimRewardForBooking({ booking: makeBooking('bookingC', 'customer1'), vendorId: 'vendor1' });
-  assert.equal(retry.booking, 'bookingC');
-  assert.equal(store.commissions.filter((commission) => commission.status !== 'canceled').length, 1);
-});
-
-test('a full refund cancels the reward', async () => {
+test('a full refund cancels the reward and frees the customer for a later qualifying booking', async () => {
   const { booking, commission } = await withReward();
   await applyRefundToReferralReward({ booking, fullRefund: true, source: 'dispute_refund' });
   assert.equal(commission.status, 'canceled');
   assert.equal(commission.refundedAmount, 5000);
+  assert.equal(commission.customerClaim, null);
   assert.equal(booking.referral.retainedPlatformFee, 0);
+  const later = await claimRewardForBooking({ booking: makeBooking('bookingB', 'customer1'), vendorId: 'vendor1' });
+  assert.equal(later.booking, 'bookingB');
+  assert.equal(store.commissions.filter((c) => c.status !== 'canceled').length, 1);
 });
 
 test('a canceled booking cancels the reward even when its fee is retained', async () => {
@@ -338,6 +411,7 @@ test('a refund after the reward was paid flags it for recovery review instead of
   assert.equal(commission.status, 'review');
   assert.equal(commission.recoverableAmount, 50);
   assert.equal(commission.amount, 50);
+  assert.equal(commission.customerClaim, 'customer1');
 });
 
 test('replayed Stripe refund events do not double count', async () => {
@@ -346,11 +420,42 @@ test('replayed Stripe refund events do not double count', async () => {
   await applyRefundToReferralReward({ booking, refundedTotal: 2000, source: 'stripe_refund' });
   assert.equal(commission.refundedAmount, 2000);
   assert.equal(commission.status, 'pending');
-  await applyRefundToReferralReward({ booking, refundedTotal: 4600, source: 'stripe_refund' });
+  await applyRefundToReferralReward({ booking, refundedTotal: 5000, source: 'stripe_refund' });
   assert.equal(commission.status, 'canceled');
 });
 
-test('rewards created under the earlier percentage program are left as they were', async () => {
+// ── Rewards created under earlier terms are never silently recalculated ───────
+const earlierReward = (overrides = {}) => ({
+  booking: 'old1', referredUser: 'customerOld', customerClaim: null, invitation: 'inv9', status: 'pending',
+  rulesModel: 'fee_percent_v3', rewardPercent: 10, rewardCap: 250, minimumPlatformFee: 500,
+  bookingTotal: 5000, platformFeeAmount: 500, retainedPlatformFee: 500, refundedAmount: 0, amount: 50,
+  paymentTransactions: [], auditTrail: [], save: async () => {},
+  ...overrides
+});
+
+test('a $500-minimum reward is still cancelled when a refund takes its fee under $500', async () => {
+  store = createStore({ commissions: [earlierReward()] });
+  const booking = makeBooking('old1', 'customerOld');
+  await applyRefundToReferralReward({ booking, refundAmount: 4500.01, source: 'partial_refund' });
+  assert.equal(store.commissions[0].status, 'canceled');
+  assert.equal(store.commissions[0].retainedPlatformFee, 499.99);
+});
+
+test('a fixed-$50 reward keeps its amount through a refund that leaves the fee eligible', async () => {
+  store = createStore({ commissions: [earlierReward({ rulesModel: 'flat_fee_v2', rewardPercent: null })] });
+  await applyRefundToReferralReward({ booking: makeBooking('old1', 'customerOld'), refundAmount: 4500, source: 'partial_refund' });
+  assert.equal(store.commissions[0].amount, 50);
+  assert.equal(store.commissions[0].status, 'pending');
+});
+
+test('a paid earlier reward is not rewritten by the updated terms', async () => {
+  store = createStore({ commissions: [earlierReward({ status: 'paid', amount: 50 })] });
+  await applyRefundToReferralReward({ booking: makeBooking('old1', 'customerOld'), refundAmount: 100, source: 'partial_refund' });
+  assert.equal(store.commissions[0].status, 'paid');
+  assert.equal(store.commissions[0].amount, 50);
+});
+
+test('rewards created under the earliest percentage program are left as they were', async () => {
   const { booking, commission } = await withReward();
   commission.rulesModel = null;
   commission.status = 'eligible';
@@ -359,18 +464,16 @@ test('rewards created under the earlier percentage program are left as they were
   assert.equal(commission.amount, 50);
 });
 
-test('the final platform fee is checked again when the booking completes', async () => {
-  const { booking, commission } = await withReward();
-  await syncRewardWithFinalFee({ booking, platformFee: 499.99, payment: { _id: 'pay1' } });
-  assert.equal(commission.status, 'canceled');
-});
-
-test('the final platform fee sets the reward amount at completion', async () => {
-  const { booking, commission } = await withReward();
-  await syncRewardWithFinalFee({ booking, platformFee: 800, payment: { _id: 'pay1' } });
-  assert.equal(commission.amount, 80);
-  assert.equal(commission.allocatedAmount, 80);
-  assert.equal(booking.referral.rewardAmount, 80);
+// ── Completion ────────────────────────────────────────────────────────────────
+test('the final fee is measured on the pre-tax amount at completion', async () => {
+  store = createStore();
+  const booking = makeBooking('bookingA', 'customer1', { totalPrice: 1088.75 });
+  Object.assign(booking.referral, { taxAmount: 88.75, platformFeePercent: 10, platformFeeAmount: 100, retainedPlatformFee: 100, rewardAmount: 10 });
+  const commission = await claimRewardForBooking({ booking, vendorId: 'vendor1' });
+  // The completion job's fee (10% of the taxed total) is not what the reward uses.
+  await syncRewardWithFinalFee({ booking, platformFee: 108.88, payment: { _id: 'pay1' } });
+  assert.equal(commission.platformFeeAmount, 100);
+  assert.equal(commission.amount, 10);
 });
 
 test('the reward is set aside from the platform fee, not the vendor payout', async () => {
@@ -379,4 +482,11 @@ test('the reward is set aside from the platform fee, not the vendor payout', asy
   assert.equal(commission.status, 'pending');
   assert.equal(commission.allocatedAmount, 50);
   assert.deepEqual(commission.paymentTransactions, ['pay1']);
+});
+
+test('an earlier reward keeps the fee the completion job calculated', async () => {
+  store = createStore({ commissions: [earlierReward()] });
+  const booking = makeBooking('old1', 'customerOld');
+  await syncRewardWithFinalFee({ booking, platformFee: 800, payment: { _id: 'pay1' } });
+  assert.equal(store.commissions[0].amount, 80);
 });

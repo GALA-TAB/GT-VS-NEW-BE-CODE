@@ -72,13 +72,19 @@ const BookingSchema = new Schema(
       referrer: { type: Schema.Types.ObjectId, ref: 'User', default: null },
       invitation: { type: Schema.Types.ObjectId, ref: 'ReferralInvitation', default: null },
       code: { type: String, trim: true, default: null },
-      // eligible: this booking holds the invitation's one reward.
-      // below_threshold: Gala Tab's booking fee on this booking is under the minimum.
+      // eligible: this booking holds the referred customer's one reward.
+      // zero_fee: the booking fee is 0%, so the booking does not qualify (and uses up nothing).
+      // already_rewarded: the customer already produced a live reward.
+      // terms_not_accepted: the referrer has not accepted the current program terms.
+      // below_threshold: recorded under the earlier $500 minimum.
       eligibility: {
         type: String,
         enum: [
           'eligible',
           'below_threshold',
+          'zero_fee',
+          'already_rewarded',
+          'terms_not_accepted',
           'self_referral',
           'not_new_customer',
           'invitation_unavailable',
@@ -86,6 +92,7 @@ const BookingSchema = new Schema(
         ],
         default: null
       },
+      rulesModel: { type: String, default: null },
       rewardAmount: { type: Number, default: 0, min: 0 },
       rewardPercent: { type: Number, default: null },
       rewardCap: { type: Number, default: null },

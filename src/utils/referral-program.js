@@ -1,16 +1,19 @@
 // Referral program: the referrer earns REFERRAL_REWARD_PERCENT of the booking fee Gala Tab
-// RETAINS from ONE referred booking (capped at REFERRAL_REWARD_CAP), and only when that
-// retained fee is at least MINIMUM_PLATFORM_FEE. The percentage and the minimum apply to
-// Gala Tab's booking-fee revenue, never to the booking total or the vendor's payout, and
-// fees from different bookings are never combined.
+// RETAINS from a referred customer's first qualifying booking, capped at REFERRAL_REWARD_CAP
+// per referred customer. There is no minimum fee: any booking with a booking fee above zero
+// qualifies, and a 0% fee booking does not. The percentage applies to Gala Tab's booking fee
+// (taxes excluded), never to the booking total or the vendor's payout.
 const REFERRAL_REWARD_PERCENT = 10;
 const REFERRAL_REWARD_CAP = 250;
-const MINIMUM_PLATFORM_FEE = 500;
-const REFERRAL_RULES_MODEL = 'fee_percent_v3';
-// Rewards recorded earlier as a fixed $50 keep their amount.
+const REFERRAL_RULES_MODEL = 'fee_percent_v4';
+// Rewards created under earlier terms keep the rules they were created with:
+//   fee_percent_v3 : 10% of the retained fee, $250 cap, $500 minimum fee
+//   flat_fee_v2    : fixed $50, $500 minimum fee
+const V3_RULES_MODEL = 'fee_percent_v3';
 const FLAT_RULES_MODEL = 'flat_fee_v2';
+const LEGACY_MINIMUM_PLATFORM_FEE = 500;
 
-const isFeeBasedModel = (model) => model === REFERRAL_RULES_MODEL || model === FLAT_RULES_MODEL;
+const isFeeBasedModel = (model) => [REFERRAL_RULES_MODEL, V3_RULES_MODEL, FLAT_RULES_MODEL].includes(model);
 
 const toCents = (amount) => Math.round((Number(amount) + Number.EPSILON) * 100);
 const fromCents = (cents) => Number((cents / 100).toFixed(2));
@@ -35,24 +38,50 @@ const calculateRetainedPlatformFee = ({ totalPrice, platformFee, refundedAmount 
   return fromCents(feeCents - feeRefundedCents);
 };
 
+// Same refund logic as above, but on the pre-tax booking amount: taxes are never part of
+// Gala Tab's booking fee, so a refund is spread across the pre-tax and tax portions in
+// proportion to the amounts the customer paid. With no tax recorded it is identical to
+// calculateRetainedPlatformFee.
+const calculateRetainedFeeExcludingTax = ({ totalPrice, taxAmount = 0, platformFee, refundedAmount = 0 }) => {
+  const totalCents = toCents(totalPrice || 0);
+  const preTaxCents = Math.min(Math.max(totalCents - toCents(taxAmount || 0), 0), Math.max(totalCents, 0));
+  const refundCents = Math.min(Math.max(toCents(refundedAmount || 0), 0), Math.max(totalCents, 0));
+  const preTaxRefundCents = totalCents > 0 ? Math.round((refundCents * preTaxCents) / totalCents) : 0;
+  return calculateRetainedPlatformFee({
+    totalPrice: fromCents(preTaxCents),
+    platformFee,
+    refundedAmount: fromCents(preTaxRefundCents)
+  });
+};
+
+// 10% of the retained booking fee, rounded to the nearest cent and capped. A booking with
+// no retained fee (a 0% fee booking, or one fully refunded) earns nothing. `minimumPlatformFee`
+// only exists for rewards created under the earlier terms.
 const calculateReferralReward = (
   retainedPlatformFee,
   {
     rewardPercent = REFERRAL_REWARD_PERCENT,
     rewardCap = REFERRAL_REWARD_CAP,
-    minimumPlatformFee = MINIMUM_PLATFORM_FEE
+    minimumPlatformFee = 0
   } = {}
 ) => {
   const retainedCents = toCents(retainedPlatformFee || 0);
-  if (!Number.isFinite(retainedCents) || retainedCents < toCents(minimumPlatformFee)) return 0;
+  if (!Number.isFinite(retainedCents) || retainedCents <= 0 || retainedCents < toCents(minimumPlatformFee)) return 0;
   const percentCents = Math.round((retainedCents * Number(rewardPercent)) / 100);
   return fromCents(Math.min(percentCents, toCents(rewardCap)));
 };
 
-// A reward is recalculated from the retained fee using the rate and cap it was created
-// with. Rewards recorded as a fixed amount keep that amount while the fee stays eligible.
+// A reward is recalculated from the retained fee using the rules it was created with.
+// Current-terms rewards never have a minimum; earlier rewards keep theirs, and rewards
+// recorded as a fixed amount keep that amount while the fee stays eligible.
 const calculateRewardForCommission = (commission, retainedPlatformFee) => {
-  const minimumPlatformFee = commission.minimumPlatformFee ?? MINIMUM_PLATFORM_FEE;
+  if (commission.rulesModel === REFERRAL_RULES_MODEL) {
+    return calculateReferralReward(retainedPlatformFee, {
+      rewardPercent: REFERRAL_REWARD_PERCENT,
+      rewardCap: REFERRAL_REWARD_CAP
+    });
+  }
+  const minimumPlatformFee = commission.minimumPlatformFee ?? LEGACY_MINIMUM_PLATFORM_FEE;
   if (commission.rewardPercent != null) {
     return calculateReferralReward(retainedPlatformFee, {
       rewardPercent: commission.rewardPercent,
@@ -78,7 +107,7 @@ const evaluateReferralPayoutEligibility = ({
   if (isFeeBasedModel(commission.rulesModel)) {
     const retained = Number(commission.retainedPlatformFee ?? commission.platformFeeAmount ?? 0);
     rewardAmount = calculateRewardForCommission(commission, retained);
-    if (rewardAmount <= 0) return { eligible: false, reason: 'platform_fee_below_threshold' };
+    if (rewardAmount <= 0) return { eligible: false, reason: 'no_qualifying_booking_fee' };
   }
   if (!commission.completionConfirmedAt || new Date(booking.checkOut) > now) {
     return { eligible: false, reason: 'completion_not_confirmed' };
@@ -105,14 +134,16 @@ const evaluateReferralPayoutEligibility = ({
 module.exports = {
   REFERRAL_REWARD_PERCENT,
   REFERRAL_REWARD_CAP,
-  MINIMUM_PLATFORM_FEE,
+  LEGACY_MINIMUM_PLATFORM_FEE,
   REFERRAL_RULES_MODEL,
+  V3_RULES_MODEL,
   FLAT_RULES_MODEL,
   isFeeBasedModel,
   toCents,
   fromCents,
   calculatePlatformFee,
   calculateRetainedPlatformFee,
+  calculateRetainedFeeExcludingTax,
   calculateReferralReward,
   calculateRewardForCommission,
   evaluateReferralPayoutEligibility

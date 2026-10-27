@@ -3,19 +3,17 @@ const ReferralCommission = require('../models/ReferralCommission');
 const User = require('../models/users/User');
 const {
   REFERRAL_RULES_MODEL,
+  V3_RULES_MODEL,
   isFeeBasedModel,
   calculatePlatformFee,
-  calculateRetainedPlatformFee,
+  calculateRetainedFeeExcludingTax,
   calculateReferralReward,
-  calculateRewardForCommission
+  calculateRewardForCommission,
+  fromCents,
+  toCents
 } = require('./referral-program');
 const { rewardOptionsFrom } = require('./referralSettings');
-const {
-  findInvitationByCode,
-  claimInvitation,
-  releaseInvitation,
-  isNewCustomer
-} = require('./referralInvitations');
+const { findInvitationByCode, isNewCustomer } = require('./referralInvitations');
 
 const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 
@@ -25,31 +23,52 @@ const isSelfReferral = ({ referrer, user, vendorId }) =>
   String(referrer?.staffOf || '') === String(vendorId) ||
   (Boolean(normalizeEmail(referrer?.email)) && normalizeEmail(referrer?.email) === normalizeEmail(user?.email));
 
-// Decides, at booking time, whether this booking may hold the invitation's reward.
-// Nothing is paid here: the fee must still be retained, the event completed, and
-// every release condition met later.
+// A referred customer can earn the referrer one reward. Any reward that has not been canceled
+// (pending, ready, processing, paid, on hold, or under review) uses it up.
+const hasLiveRewardForCustomer = async ({ userId, excludeBookingId = null, CommissionModel = ReferralCommission }) => {
+  const filter = { referredUser: userId, status: { $ne: 'canceled' } };
+  if (excludeBookingId) filter.booking = { $ne: excludeBookingId };
+  return Boolean(await CommissionModel.exists(filter));
+};
+
+// Decides, at booking time, whether this booking may hold the referred customer's reward.
+// Only an eligible booking is recorded against the customer: a booking that does not qualify
+// (0% booking fee, self-referral, ...) leaves them able to earn on a later booking. Nothing
+// is paid here: the fee must still be retained, the event completed, and every release
+// condition met later. The fee excludes taxes.
 const buildReferralSnapshot = async ({
   attribution,
   user,
   vendorId,
   finalTotalPrice,
+  taxAmount = 0,
   platformFeePercent,
   settings,
   deps = {}
 }) => {
-  const { UserModel = User, findInvitation = findInvitationByCode, newCustomerCheck = isNewCustomer } = deps;
-  const rewardRules = rewardOptionsFrom(attribution.rules?.rewardPercent != null ? attribution.rules : settings);
-  const platformFeeAmount = calculatePlatformFee(finalTotalPrice, platformFeePercent);
+  const {
+    UserModel = User,
+    AccountModel = ReferralAccount,
+    findInvitation = findInvitationByCode,
+    newCustomerCheck = isNewCustomer,
+    rewardedCheck = hasLiveRewardForCustomer
+  } = deps;
+  const rewardRules = rewardOptionsFrom();
+  const preTaxTotal = fromCents(Math.max(toCents(finalTotalPrice || 0) - toCents(taxAmount || 0), 0));
+  const platformFeeAmount = calculatePlatformFee(preTaxTotal, platformFeePercent);
   const expectedReward = calculateReferralReward(platformFeeAmount, rewardRules);
   const invitation = attribution.invitation
     ? { _id: attribution.invitation }
     : await findInvitation(attribution.code);
   const referrer = await UserModel.findById(attribution.referrer).select('email staffOf');
+  const referrerAccount = await AccountModel.findOne({ user: attribution.referrer }).select('referrerConsent');
 
   let eligibility = 'eligible';
   if (!invitation) eligibility = 'invitation_unavailable';
   else if (isSelfReferral({ referrer: referrer || { _id: attribution.referrer }, user, vendorId })) eligibility = 'self_referral';
-  else if (expectedReward <= 0) eligibility = 'below_threshold';
+  else if (expectedReward <= 0) eligibility = 'zero_fee';
+  else if (referrerAccount?.referrerConsent?.termsVersion !== settings?.termsVersion) eligibility = 'terms_not_accepted';
+  else if (await rewardedCheck({ userId: user._id })) eligibility = 'already_rewarded';
   else if (!(await newCustomerCheck({ userId: user._id, attributedAt: attribution.createdAt }))) eligibility = 'not_new_customer';
 
   return {
@@ -58,19 +77,21 @@ const buildReferralSnapshot = async ({
     referrer: attribution.referrer,
     code: attribution.code,
     eligibility,
+    rulesModel: REFERRAL_RULES_MODEL,
     rewardAmount: eligibility === 'eligible' ? expectedReward : 0,
     rewardPercent: rewardRules.rewardPercent,
     rewardCap: rewardRules.rewardCap,
-    minimumPlatformFee: rewardRules.minimumPlatformFee,
+    minimumPlatformFee: 0,
     completionDelayHours: attribution.rules?.completionDelayHours || settings?.completionDelayHours || 48,
     platformFeePercent: Number(platformFeePercent || 0),
     platformFeeAmount,
     retainedPlatformFee: platformFeeAmount,
+    taxAmount: Number(taxAmount || 0),
     attributionRulesVersion: attribution.rules?.version ?? null,
     committedAt: new Date(),
     auditTrail: [{
       action: eligibility === 'eligible' ? 'reward_candidate' : `booking_${eligibility}`,
-      metadata: { rulesVersion: attribution.rules?.version ?? null, platformFeeAmount }
+      metadata: { rulesVersion: attribution.rules?.version ?? null, termsVersion: settings?.termsVersion ?? null, platformFeeAmount }
     }]
   };
 };
@@ -82,31 +103,33 @@ const markBookingNotRewarded = async (booking, eligibility, action) => {
   await booking.save();
 };
 
-// Claims the invitation for a candidate booking and records its single reward.
-const claimRewardForBooking = async ({ booking, vendorId, paymentIntentIds = [] }) => {
+// Records the booking's single reward in the ledger. The ledger enforces one reward per
+// booking and one live reward per referred customer, so concurrent or repeated attempts
+// (a retry, a second booking, a link and a code together) can never produce a second one.
+const claimRewardForBooking = async ({ booking, vendorId, paymentIntentIds = [], CommissionModel = ReferralCommission }) => {
   const snapshot = booking.referral;
-  if (snapshot?.eligibility !== 'eligible' || !snapshot.invitation) return null;
-  const invitation = await claimInvitation({
-    invitationId: snapshot.invitation,
-    userId: booking.user,
-    bookingId: booking._id
-  });
-  if (!invitation) {
-    await markBookingNotRewarded(booking, 'invitation_unavailable', 'invitation_already_redeemed');
+  if (snapshot?.eligibility !== 'eligible' || !snapshot.referrer) return null;
+  const existing = await CommissionModel.findOne({ booking: booking._id });
+  if (existing) return existing;
+  if (await hasLiveRewardForCustomer({ userId: booking.user, excludeBookingId: booking._id, CommissionModel })) {
+    await markBookingNotRewarded(booking, 'already_rewarded', 'customer_already_rewarded');
     return null;
   }
   try {
     const referrerAccount = await ReferralAccount.findOne({ user: snapshot.referrer });
-    return await ReferralCommission.create({
+    return await CommissionModel.create({
       booking: booking._id,
       attribution: snapshot.attribution,
-      invitation: invitation._id,
+      sourceInvitation: snapshot.invitation,
+      customerClaim: booking.user,
       referredUser: booking.user,
       referrer: snapshot.referrer,
       vendor: vendorId,
-      rulesModel: REFERRAL_RULES_MODEL,
+      // Bookings evaluated before the updated terms have no rules model and keep the earlier rules.
+      rulesModel: snapshot.rulesModel || V3_RULES_MODEL,
       paymentIntentIds,
       bookingTotal: booking.totalPrice,
+      taxAmount: snapshot.taxAmount || 0,
       platformFeeAmount: snapshot.platformFeeAmount,
       retainedPlatformFee: snapshot.platformFeeAmount,
       minimumPlatformFee: snapshot.minimumPlatformFee,
@@ -120,28 +143,28 @@ const claimRewardForBooking = async ({ booking, vendorId, paymentIntentIds = [] 
     });
   } catch (error) {
     if (error.code === 11000) {
-      const existing = await ReferralCommission.findOne({ booking: booking._id });
-      if (existing) return existing;
+      const duplicate = await CommissionModel.findOne({ booking: booking._id });
+      if (duplicate) return duplicate;
+      await markBookingNotRewarded(booking, 'already_rewarded', 'customer_already_rewarded');
+      return null;
     }
-    await releaseInvitation({ invitationId: invitation._id, bookingId: booking._id });
-    await markBookingNotRewarded(booking, 'invitation_unavailable', 'reward_record_failed');
+    // The booking stays a reward candidate; the reward cycle retries interrupted ledger writes.
     console.error('[referral] Failed to record booking reward:', error.message);
     return null;
   }
 };
 
-// Cancels an unpaid reward and frees its invitation for the same customer's next
-// qualifying booking. Paid rewards are never cancelled here.
+// Cancels an unpaid reward and frees the referred customer to earn on their next qualifying
+// booking. Paid rewards are never cancelled here.
 const cancelReward = async (commission, { reason, actor = null, metadata = {} }) => {
-  const invitationId = commission.invitation;
   commission.status = 'canceled';
+  commission.canceledInvitation = commission.invitation || commission.canceledInvitation || null;
   commission.invitation = null;
-  commission.canceledInvitation = invitationId;
+  commission.customerClaim = null;
   commission.allocatedAmount = 0;
   commission.availableFundsVerified = false;
   commission.auditTrail.push({ action: 'reward_canceled', reason, actor, metadata });
   await commission.save();
-  if (invitationId) await releaseInvitation({ invitationId, bookingId: commission.booking });
 };
 
 const isPaidOrInFlight = (commission) => ['paid', 'processing'].includes(commission.status);
@@ -214,8 +237,9 @@ const applyRefundToReferralReward = async ({
         ? Math.max(Number(commission.refundedAmount || 0), Number(refundedTotal))
         : Number(commission.refundedAmount || 0) + Number(refundAmount || 0)
     );
-  const retained = calculateRetainedPlatformFee({
+  const retained = calculateRetainedFeeExcludingTax({
     totalPrice: total,
+    taxAmount: commission.taxAmount,
     platformFee: commission.platformFeeAmount,
     refundedAmount
   });
@@ -240,12 +264,19 @@ const applyRefundToReferralReward = async ({
 const syncRewardWithFinalFee = async ({ booking, platformFee, payment }) => {
   const commission = await ReferralCommission.findOne({ booking: booking._id });
   if (!commission || !isFeeBasedModel(commission.rulesModel)) return null;
-  const retained = calculateRetainedPlatformFee({
+  // Current terms measure the fee on the pre-tax amount; earlier rewards keep the fee
+  // the completion job calculated.
+  const feePercent = Number(booking.referral?.platformFeePercent);
+  const finalFee = commission.rulesModel === REFERRAL_RULES_MODEL && Number.isFinite(feePercent)
+    ? calculatePlatformFee(fromCents(Math.max(toCents(booking.totalPrice) - toCents(commission.taxAmount || 0), 0)), feePercent)
+    : platformFee;
+  const retained = calculateRetainedFeeExcludingTax({
     totalPrice: booking.totalPrice,
-    platformFee,
+    taxAmount: commission.taxAmount,
+    platformFee: finalFee,
     refundedAmount: commission.refundedAmount
   });
-  commission.platformFeeAmount = platformFee;
+  commission.platformFeeAmount = finalFee;
   commission.retainedPlatformFee = retained;
   if (payment?._id && !commission.paymentTransactions.some((id) => String(id) === String(payment._id))) {
     commission.paymentTransactions.push(payment._id);
@@ -254,10 +285,10 @@ const syncRewardWithFinalFee = async ({ booking, platformFee, payment }) => {
   await settleRewardAfterFeeChange(commission, booking, {
     retained,
     reason: 'final_platform_fee',
-    metadata: { source: 'completion', platformFee }
+    metadata: { source: 'completion', platformFee: finalFee }
   });
   if (booking.referral) {
-    booking.referral.platformFeeAmount = platformFee;
+    booking.referral.platformFeeAmount = finalFee;
     booking.referral.retainedPlatformFee = retained;
     await booking.save();
   }
@@ -266,6 +297,7 @@ const syncRewardWithFinalFee = async ({ booking, platformFee, payment }) => {
 
 module.exports = {
   buildReferralSnapshot,
+  hasLiveRewardForCustomer,
   claimRewardForBooking,
   cancelReward,
   applyRefundToReferralReward,

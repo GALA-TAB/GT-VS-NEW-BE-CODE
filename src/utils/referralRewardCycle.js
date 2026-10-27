@@ -4,10 +4,9 @@ const Payments = require('../models/Payment');
 const ReferralAccount = require('../models/ReferralAccount');
 const ReferralCommission = require('../models/ReferralCommission');
 const stripeClient = require('../config/stripe');
-const { evaluateReferralPayoutEligibility, toCents, REFERRAL_RULES_MODEL, FLAT_RULES_MODEL } = require('./referral-program');
+const { evaluateReferralPayoutEligibility, toCents, REFERRAL_RULES_MODEL, V3_RULES_MODEL, FLAT_RULES_MODEL } = require('./referral-program');
 const { getCurrentSettings } = require('./referralSettings');
 const { cancelReward, claimRewardForBooking } = require('./referralRewards');
-const { markInvitationRewarded } = require('./referralInvitations');
 
 const RETRY_AFTER_FAILURE_MS = 15 * 60 * 1000;
 const STALE_PROCESSING_MS = 10 * 60 * 1000;
@@ -15,7 +14,7 @@ const REPAIR_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const REPAIR_MIN_AGE_MS = 5 * 60 * 1000;
 const ESCROW_SETTLED = ['released', 'completed'];
 
-const CANCELING_REASONS = new Set(['booking_canceled', 'platform_fee_below_threshold']);
+const CANCELING_REASONS = new Set(['booking_canceled', 'no_qualifying_booking_fee']);
 
 const createBalanceReader = (stripe) => {
   let remaining = null;
@@ -74,7 +73,7 @@ const markEligibleRewards = async ({ now, settings, balance }) => {
   // here once service completion was already confirmed (the migration script closes the rest).
   const candidates = await ReferralCommission.find({
     $and: [
-      { $or: [{ rulesModel: { $in: [REFERRAL_RULES_MODEL, FLAT_RULES_MODEL] } }, { rulesModel: null, completionConfirmedAt: { $ne: null } }] },
+      { $or: [{ rulesModel: { $in: [REFERRAL_RULES_MODEL, V3_RULES_MODEL, FLAT_RULES_MODEL] } }, { rulesModel: null, completionConfirmedAt: { $ne: null } }] },
       {
         $or: [
           { status: 'pending' },
@@ -179,14 +178,11 @@ const payEligibleRewards = async ({ now, settings, stripe, balance }) => {
         );
       }
       await ReferralCommission.updateOne({ _id: claimed._id }, { $set: { providerTransferId: transfer.id } });
-      const paid = await ReferralCommission.findOneAndUpdate(
+      await ReferralCommission.findOneAndUpdate(
         { _id: claimed._id, status: 'processing' },
         { $set: { status: 'paid' }, $push: { auditTrail: { action: 'reward_paid', metadata: { transferId: transfer.id } } } },
         { new: true }
       );
-      if (paid?.invitation) {
-        await markInvitationRewarded({ invitationId: paid.invitation, bookingId: paid.booking });
-      }
     } catch (error) {
       console.error('[referralRewards] Reward payout failed:', reward._id, error.message);
       await ReferralCommission.updateOne(

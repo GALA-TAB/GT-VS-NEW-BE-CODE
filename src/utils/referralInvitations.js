@@ -57,50 +57,21 @@ const createInvitation = async ({ account, label = '' }) => {
   throw new Error('Could not generate a unique invitation code.');
 };
 
-// An invitation can be redeemed while unused, or again by the same referred customer
-// after an earlier unpaid reward was canceled. Anyone else is rejected.
-const isInvitationUsable = (invitation, userId) =>
-  Boolean(invitation) &&
-  invitation.status === 'active' &&
-  (!invitation.referredUser || !userId || String(invitation.referredUser) === String(userId));
+// A referral link/code refers customers to Gala Tab as a platform and can be used by any
+// number of new customers; it only stops working once it is revoked. (Earlier terms made an
+// invitation single-use, so legacy claimed/rewarded invitations are usable again.)
+const isInvitationUsable = (invitation) => Boolean(invitation) && invitation.status !== 'revoked';
 
-// The conditional update is atomic: only one booking can win an invitation, however many
-// are submitted at once. A booking that already holds it (e.g. a retry after a crash)
-// may continue; no other booking can take it.
-const claimInvitation = ({ invitationId, userId, bookingId, Invitation = ReferralInvitation }) =>
-  Invitation.findOneAndUpdate(
-    {
-      _id: invitationId,
-      $or: [
-        { status: 'active', $or: [{ referredUser: null }, { referredUser: userId }] },
-        { status: 'claimed', claimedBooking: bookingId }
-      ]
-    },
-    { $set: { status: 'claimed', referredUser: userId, claimedBooking: bookingId, claimedAt: new Date() } },
-    { new: true }
-  );
-
-const releaseInvitation = ({ invitationId, bookingId, Invitation = ReferralInvitation }) =>
-  Invitation.findOneAndUpdate(
-    { _id: invitationId, status: 'claimed', claimedBooking: bookingId },
-    { $set: { status: 'active', claimedBooking: null, claimedAt: null } },
-    { new: true }
-  );
-
-const markInvitationRewarded = ({ invitationId, bookingId, Invitation = ReferralInvitation }) =>
-  Invitation.findOneAndUpdate(
-    { _id: invitationId, status: 'claimed', claimedBooking: bookingId },
-    { $set: { status: 'rewarded', rewardedAt: new Date() } },
-    { new: true }
-  );
-
-// "New customer": no live booking existed before the referral was first attributed.
+// "New customer": no live booking existed before the referral was first attributed. A
+// booking that was itself nonqualifying (0% booking fee) never counts against the customer,
+// so it does not use up their eligibility if they are attributed again later.
 const isNewCustomer = async ({ userId, attributedAt, excludeBookingId, BookingModel = Booking }) => {
   const filter = {
     user: userId,
     isDeleted: { $ne: true },
     status: { $in: ['pending', 'booked', 'completed'] },
-    createdAt: { $lt: attributedAt }
+    createdAt: { $lt: attributedAt },
+    'referral.eligibility': { $ne: 'zero_fee' }
   };
   if (excludeBookingId) filter._id = { $ne: excludeBookingId };
   return !(await BookingModel.exists(filter));
@@ -115,8 +86,5 @@ module.exports = {
   findInvitationByCode,
   createInvitation,
   isInvitationUsable,
-  claimInvitation,
-  releaseInvitation,
-  markInvitationRewarded,
   isNewCustomer
 };
