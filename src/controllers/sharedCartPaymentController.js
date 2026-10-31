@@ -6,6 +6,7 @@ const AppError = require('../utils/appError');
 const { createBooking } = require('./requestController');
 const { getIO } = require('../utils/socket');
 const { resolveReferralAttribution } = require('../utils/referralAttribution');
+const { sanitizeAgreementProof } = require('../utils/agreementProof');
 
 // Pushes the latest payment status to the renter's cart in real time, instead
 // of relying solely on the FE's 8s poll of GET /shared-cart-payment/:token.
@@ -48,7 +49,9 @@ const runCreateBookingForItem = (sharedCart, item) =>
         initialsImage: sharedCart.initialsImage,
         idFrontImage: sharedCart.idFrontImage,
         idBackImage: sharedCart.idBackImage,
+        agreementProof: sharedCart.agreementProof,
       },
+      signingMeta: sharedCart.agreementProof?.signingMeta,
       referralAttributionId: sharedCart.referralAttribution,
       user: { _id: sharedCart.createdBy },
       ip: '',
@@ -117,6 +120,7 @@ exports.createSharedCartPayment = catchAsync(async (req, res, next) => {
     initialsImage,
     idFrontImage,
     idBackImage,
+    agreementProof,
     referralAttributionToken,
     referralCode,
     referralVisitorId,
@@ -166,6 +170,18 @@ exports.createSharedCartPayment = catchAsync(async (req, res, next) => {
     initialsImage: initialsImage || null,
     idFrontImage: idFrontImage || null,
     idBackImage: idBackImage || null,
+    agreementProof: (() => {
+      const proof = sanitizeAgreementProof(agreementProof);
+      if (!proof) return undefined;
+      return {
+        ...proof,
+        signingMeta: {
+          ipAddress: req.ip || req.headers['x-forwarded-for'],
+          userAgent: req.headers['user-agent'],
+          signedAt: new Date(),
+        },
+      };
+    })(),
   });
 
   res.status(201).json({
@@ -265,6 +281,7 @@ exports.getSharedCartByToken = catchAsync(async (req, res, next) => {
       initialsImage: sharedCart.initialsImage,
       idFrontImage: sharedCart.idFrontImage,
       idBackImage: sharedCart.idBackImage,
+      agreementProof: sharedCart.agreementProof,
       createdBy: sharedCart.createdBy,
       expiresAt: sharedCart.expiresAt,
     },

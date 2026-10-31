@@ -39,6 +39,7 @@ const { normalizeIsDeleted, withSoftDeleteFilter } = require('../utils/softDelet
 const { moderateText } = require('../utils/mediaModeration');
 const Wallet = require('../models/Wallet');
 const BookingAgreement = require('../models/BookingAgreement');
+const { sanitizeAgreementProof } = require('../utils/agreementProof');
 const ReferralAttribution = require('../models/ReferralAttribution');
 const ReferralCommission = require('../models/ReferralCommission');
 const { resolveReferralAttribution } = require('../utils/referralAttribution');
@@ -125,6 +126,7 @@ const createBooking = catchAsync(async (req, res, next) => {
     idFrontImage,
     idBackImage,
     agreementSnapshot,
+    agreementProof,
     referralAttributionToken,
     referralCode,
     referralVisitorId,
@@ -470,6 +472,18 @@ const createBooking = catchAsync(async (req, res, next) => {
   // Save agreement with signature if provided
   if (signatureImage && initialsImage) {
     try {
+      // For a booking paid through a shared link, the proof recorded when the
+      // customer signed (what they ticked, plus when/where) is authoritative:
+      // the page that finishes the booking may have been reloaded and no
+      // longer remembers the acknowledgements.
+      const storedProof =
+        isSharedCartPayment && sharedCart?.agreementProof?.acknowledgements
+          ? sharedCart.agreementProof
+          : null;
+      const proof = sanitizeAgreementProof(storedProof || agreementProof);
+      // req.signingMeta is only ever set server-side (shared-cart auto-booking),
+      // never from the request body, so it can't be spoofed by a client.
+      const signingMeta = req.signingMeta || storedProof?.signingMeta || {};
       await BookingAgreement.create({
         booking: booking._id,
         user: userId,
@@ -492,8 +506,13 @@ const createBooking = catchAsync(async (req, res, next) => {
           vendorRules: listingExists?.rules || '',
           paymentMethod: isWalletPayment ? 'wallet' : (isSharedCartPayment ? 'shared_cart_payment' : 'card'),
         },
-        ipAddress: req.ip || req.headers['x-forwarded-for'] || req.connection?.remoteAddress,
-        userAgent: req.headers['user-agent'],
+        ...(proof?.termsVersion && { termsVersion: proof.termsVersion }),
+        ...(proof?.termsSnapshot?.length && { termsSnapshot: proof.termsSnapshot }),
+        ...(proof?.acknowledgements && { acknowledgements: proof.acknowledgements }),
+        ...(signingMeta.signedAt && { signedAt: signingMeta.signedAt }),
+        ipAddress:
+          signingMeta.ipAddress || req.ip || req.headers['x-forwarded-for'] || req.connection?.remoteAddress,
+        userAgent: signingMeta.userAgent || req.headers['user-agent'],
       });
     } catch (agreementError) {
       console.error('Failed to save booking agreement:', agreementError.message);

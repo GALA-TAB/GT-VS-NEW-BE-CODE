@@ -1,5 +1,13 @@
 const { Schema, model } = require("mongoose");
 
+const acknowledgementSchema = new Schema(
+  {
+    accepted: { type: Boolean, default: false },
+    acceptedAt: { type: Date },
+  },
+  { _id: false }
+);
+
 const BookingAgreementSchema = new Schema(
   {
     booking: {
@@ -62,7 +70,7 @@ const BookingAgreementSchema = new Schema(
       vendorRules: String,
       paymentMethod: {
         type: String,
-        enum: ["card", "wallet"],
+        enum: ["card", "wallet", "shared_cart_payment"],
       },
     },
 
@@ -70,6 +78,26 @@ const BookingAgreementSchema = new Schema(
     termsVersion: {
       type: String,
       default: "1.0",
+    },
+
+    // The exact text the customer was shown for each required section
+    // (cancellation & refund, terms & conditions, damage & security, vendor
+    // rules). Agreements created before this existed will not have it.
+    termsSnapshot: [
+      {
+        _id: false,
+        key: String,
+        title: String,
+        content: String,
+      },
+    ],
+
+    // Per-section acknowledgements the customer ticked before signing
+    acknowledgements: {
+      cancellation: acknowledgementSchema,
+      terms: acknowledgementSchema,
+      damage: acknowledgementSchema,
+      finalConfirmation: acknowledgementSchema,
     },
 
     // IP and device info for legal validity

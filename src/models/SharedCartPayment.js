@@ -72,6 +72,19 @@ const sharedCartPaymentSchema = new Schema(
     initialsImage: { type: String, default: null },
     idFrontImage: { type: String, default: null },
     idBackImage: { type: String, default: null },
+    // What the signer saw/acknowledged, plus who/when/where they signed (stamped
+    // server-side). Carried onto each booking's agreement when it is created,
+    // including by the server-side auto-booking that has no signer request.
+    agreementProof: {
+      termsVersion: String,
+      termsSnapshot: [{ _id: false, key: String, title: String, content: String }],
+      acknowledgements: { type: Schema.Types.Mixed },
+      signingMeta: {
+        ipAddress: String,
+        userAgent: String,
+        signedAt: Date,
+      },
+    },
     // Set once a booking has been created from this (paid) link, so it can't
     // be replayed into a second booking.
     consumed: {

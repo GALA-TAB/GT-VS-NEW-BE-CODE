@@ -1,6 +1,9 @@
 const BookingAgreement = require('../models/BookingAgreement');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
+const createLog = require('../utils/createLog');
+
+const idOf = (value) => String(value?._id || value || '');
 
 // GET /api/booking-agreements — Admin: list all agreements (paginated)
 const getAllAgreements = catchAsync(async (req, res) => {
@@ -87,6 +90,8 @@ const getAgreementById = catchAsync(async (req, res, next) => {
 });
 
 // GET /api/booking-agreements/booking/:bookingId — Get agreement for a specific booking
+// Admins see everything. The customer who signed sees their own agreement. The
+// vendor on the booking sees the agreement but never the customer's ID images.
 const getAgreementByBooking = catchAsync(async (req, res, next) => {
   const agreement = await BookingAgreement.findOne({ booking: req.params.bookingId })
     .populate('user', 'firstName lastName fullName email phone profilePicture')
@@ -98,9 +103,41 @@ const getAgreementByBooking = catchAsync(async (req, res, next) => {
     return next(new AppError('No agreement found for this booking', 404));
   }
 
+  const role = req.user.role;
+  const userId = idOf(req.user);
+  const isAdmin = role === 'admin';
+  const isOwnerCustomer = role === 'customer' && idOf(agreement.user) === userId;
+  // Vendor staff act on behalf of the vendor they belong to.
+  const isBookingVendor =
+    role === 'vendor' &&
+    [userId, idOf(req.user.staffOf)].filter(Boolean).includes(idOf(agreement.vendor));
+
+  if (!isAdmin && !isOwnerCustomer && !isBookingVendor) {
+    return next(new AppError('You do not have permission to view this agreement', 403));
+  }
+
+  const data = agreement.toObject();
+  if (isBookingVendor) {
+    delete data.idFrontImage;
+    delete data.idBackImage;
+  }
+
+  if (isAdmin) {
+    // Government ID images are sensitive: leave an audit trail of who viewed them.
+    createLog({
+      actorId: req.user._id,
+      actorModel: 'admin',
+      action: 'VIEW_BOOKING_AGREEMENT',
+      description: `Admin viewed booking agreement and ID for booking ${req.params.bookingId}`,
+      target: 'BookingAgreement',
+      targetId: agreement._id,
+      ipAddress: req.ip || req.headers['x-forwarded-for'],
+    });
+  }
+
   res.status(200).json({
     status: 'success',
-    data: agreement,
+    data,
   });
 });
 
