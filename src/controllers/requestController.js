@@ -329,6 +329,10 @@ const createBooking = catchAsync(async (req, res, next) => {
     });
   }
 
+  // Declared outside the coupon block: the booking agreement below records it
+  // too. It used to be block-scoped, so saving the agreement threw a
+  // ReferenceError for every booking and no agreement was ever stored.
+  let discountValue = 0;
   if (couponCode) {
     const discount = await Discount.findOne({
       discountCode: couponCode,
@@ -340,7 +344,6 @@ const createBooking = catchAsync(async (req, res, next) => {
     if (!discount) {
       return next(new AppError('Invalid  discount code', 404));
     }
-    let discountValue = 0;
 
     if (discount.discountType === 'Percentage' && totalPriceforConfirm) {
       discountValue = (totalPriceforConfirm * discount.percentage) / 100;
@@ -515,7 +518,7 @@ const createBooking = catchAsync(async (req, res, next) => {
         userAgent: signingMeta.userAgent || req.headers['user-agent'],
       });
     } catch (agreementError) {
-      console.error('Failed to save booking agreement:', agreementError.message);
+      console.error(`Failed to save booking agreement for booking ${booking._id}:`, agreementError.message);
       // Don't block the booking — agreement save failure is non-critical
     }
   }
