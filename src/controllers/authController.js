@@ -168,6 +168,20 @@ const registerUser = catchAsync(async (req, res, next) => {
   };
   delete pendingData.confirmPassword;
 
+  // Record consent server-side so the timestamp/IP can't be spoofed by the
+  // client. Clients that predate the terms checkbox (e.g. older mobile
+  // builds) simply don't send termsAccepted and get no record.
+  delete pendingData.termsAccepted;
+  delete pendingData.termsVersion;
+  if (req.body.termsAccepted === true) {
+    pendingData.termsAcceptance = {
+      version: req.body.termsVersion || 'unspecified',
+      acceptedAt: new Date(),
+      ipAddress: req.ip || req.headers['x-forwarded-for'],
+      userAgent: req.headers['user-agent']
+    };
+  }
+
   // Upsert by email so a user who abandons signup can simply try again with
   // the same email without hitting an "already exists" error.
   const pendingUser = await PendingRegistration.findOneAndUpdate({ email }, pendingData, {

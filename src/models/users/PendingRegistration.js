@@ -30,6 +30,12 @@ const pendingRegistrationSchema = new Schema({
   password: { type: String, required: true },
   role: { type: String, required: true },
   providers: { type: [String], default: ['local'] },
+  termsAcceptance: {
+    version: { type: String, trim: true },
+    acceptedAt: { type: Date },
+    ipAddress: { type: String, trim: true },
+    userAgent: { type: String, trim: true }
+  },
   OTP: { type: String },
   otpExpiration: { type: Number },
   createdAt: {

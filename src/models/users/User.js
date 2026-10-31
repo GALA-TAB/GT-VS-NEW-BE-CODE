@@ -248,6 +248,13 @@ const userSchema = new Schema(
       type: Boolean,
       default: false
     },
+    // Evidence of consent to the Terms of Service / Privacy Policy at signup.
+    termsAcceptance: {
+      version: { type: String, trim: true },
+      acceptedAt: { type: Date },
+      ipAddress: { type: String, trim: true },
+      userAgent: { type: String, trim: true }
+    },
     lastLoginAt: Date,
     passwordChangedAt: Date,
     passwordResetToken: String,

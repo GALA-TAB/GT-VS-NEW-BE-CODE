@@ -72,6 +72,13 @@ const registerUserSchema = Joi.object({
     'any.only': 'Invalid user type.'
   }),
 
+  // Consent to the Terms of Service / Privacy Policy. The server (not the
+  // client) stamps the time/IP of acceptance; these only carry the intent.
+  termsAccepted: Joi.boolean().valid(true).optional().messages({
+    'any.only': 'You must accept the Terms of Service and Privacy Policy.'
+  }),
+  termsVersion: Joi.string().max(50).optional(),
+
   googleId: Joi.string()
     .when('provider', {
       is: 'google',
