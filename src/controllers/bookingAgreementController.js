@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const BookingAgreement = require('../models/BookingAgreement');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
@@ -141,8 +142,64 @@ const getAgreementByBooking = catchAsync(async (req, res, next) => {
   });
 });
 
+// GET /api/booking-agreements/summary?bookingIds=a,b,c — Admin only
+// Lightweight per-booking status for list screens (Total Bookings). It reports
+// what is on file without ever returning the images themselves.
+const getAgreementSummary = catchAsync(async (req, res, next) => {
+  const ids = String(req.query.bookingIds || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
+
+  if (ids.length === 0) {
+    return res.status(200).json({ status: 'success', data: {} });
+  }
+  if (ids.length > 100 || ids.some((id) => !mongoose.isValidObjectId(id))) {
+    return next(new AppError('bookingIds must be up to 100 valid booking ids', 400));
+  }
+
+  const has = (field) => ({ $gt: [{ $strLenBytes: { $ifNull: [field, ''] } }, 0] });
+  const ack = (key) => ({ $cond: [{ $eq: [`$acknowledgements.${key}.accepted`, true] }, 1, 0] });
+
+  const rows = await BookingAgreement.aggregate([
+    { $match: { booking: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) } } },
+    { $sort: { signedAt: 1 } },
+    {
+      $project: {
+        booking: 1,
+        signedAt: 1,
+        hasSignature: has('$signatureImage'),
+        hasInitials: has('$initialsImage'),
+        hasIdFront: has('$idFrontImage'),
+        hasIdBack: has('$idBackImage'),
+        termsArchived: { $gt: [{ $size: { $ifNull: ['$termsSnapshot', []] } }, 0] },
+        acknowledgedCount: {
+          $add: [ack('cancellation'), ack('terms'), ack('damage'), ack('finalConfirmation')],
+        },
+      },
+    },
+  ]);
+
+  // Sorted oldest to newest, so the most recent agreement for a booking wins.
+  const data = {};
+  rows.forEach((row) => {
+    data[String(row.booking)] = {
+      signedAt: row.signedAt,
+      hasSignature: row.hasSignature,
+      hasInitials: row.hasInitials,
+      hasId: row.hasIdFront && row.hasIdBack,
+      termsArchived: row.termsArchived,
+      acknowledgedCount: row.acknowledgedCount,
+      acknowledgedTotal: 4,
+    };
+  });
+
+  res.status(200).json({ status: 'success', data });
+});
+
 module.exports = {
   getAllAgreements,
   getAgreementById,
   getAgreementByBooking,
+  getAgreementSummary,
 };
