@@ -1,10 +1,11 @@
 const { Schema, model } = require('mongoose');
 
-// One shareable invitation = one link + one matching backup code = at most one reward.
-// active   : can be redeemed
-// claimed  : a qualifying booking holds it; its reward is pending or being paid
-// rewarded : the reward was paid; the invitation can never produce another one
+// One shareable referral link + matching backup code. It refers customers to Gala Tab as a
+// platform and can attribute any number of new customers; each referred customer can earn
+// the referrer one reward (tracked on ReferralCommission.customerClaim).
+// active   : can be used
 // revoked  : retired by the referrer or an administrator
+// claimed / rewarded : only set by earlier terms (single-use invitations); treated as active.
 const referralInvitationSchema = new Schema(
   {
     referrer: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },

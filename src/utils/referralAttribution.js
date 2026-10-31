@@ -11,12 +11,14 @@ const findActiveVisitorAttribution = (visitorHash) =>
   ReferralAttribution.findOne({ visitorHash, status: 'active', expiresAt: { $gt: new Date() } });
 
 // A visitor keeps their first valid attribution. It stops being valid once its
-// invitation can no longer be redeemed by them, which frees them to use another code.
+// invitation is revoked, which frees them to use another code. Using both a link and a
+// code never creates a second attribution, and never a second reward (see the ledger's
+// one-live-reward-per-customer rule).
 const preservedAttributionFor = async (visitorHash, userId) => {
   const existing = await findActiveVisitorAttribution(visitorHash);
   if (!existing) return null;
   const invitation = existing.invitation ? await ReferralInvitation.findById(existing.invitation) : null;
-  if (!invitation || isInvitationUsable(invitation, userId)) return existing;
+  if (!invitation || isInvitationUsable(invitation)) return existing;
   existing.status = 'invalid';
   await existing.save();
   return null;
@@ -35,7 +37,7 @@ const createAttributionForCode = async (code, userId, visitorId) => {
   const settings = await getCurrentSettings();
   if (!settings.enabled || !code) return null;
   const invitation = await findInvitationByCode(code);
-  if (!invitation || !isInvitationUsable(invitation, userId)) return null;
+  if (!invitation || !isInvitationUsable(invitation)) return null;
   const account = await ReferralAccount.findOne({ user: invitation.referrer, referrerEnabled: true });
   if (
     !account ||
@@ -82,7 +84,7 @@ const resolveReferralAttribution = async ({ token, code, userId, visitorId }) =>
     });
     if (attribution) {
       const invitation = attribution.invitation ? await ReferralInvitation.findById(attribution.invitation) : null;
-      if (!invitation || isInvitationUsable(invitation, userId)) return { attribution, token };
+      if (!invitation || isInvitationUsable(invitation)) return { attribution, token };
     }
   }
   if (visitorId) {

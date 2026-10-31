@@ -13,11 +13,9 @@ const catchAsync = require('../utils/catchAsync');
 const {
   REFERRAL_RULES_MODEL,
   REFERRAL_REWARD_PERCENT,
-  REFERRAL_REWARD_CAP,
-  MINIMUM_PLATFORM_FEE,
-  calculateReferralReward
+  REFERRAL_REWARD_CAP
 } = require('../utils/referral-program');
-const { getCurrentSettings, rewardOptionsFrom } = require('../utils/referralSettings');
+const { getCurrentSettings } = require('../utils/referralSettings');
 const { hashToken, createAttributionForCode } = require('../utils/referralAttribution');
 const {
   CODE_PATTERN,
@@ -33,9 +31,8 @@ const referralUrlFor = (code) =>
 const publicSettings = (settings) => ({
   termsVersion: settings.termsVersion,
   enabled: settings.enabled,
-  rewardPercent: settings.rewardPercent ?? REFERRAL_REWARD_PERCENT,
-  rewardCap: settings.rewardCap ?? REFERRAL_REWARD_CAP,
-  minimumPlatformFee: settings.minimumPlatformFee ?? MINIMUM_PLATFORM_FEE,
+  rewardPercent: REFERRAL_REWARD_PERCENT,
+  rewardCap: REFERRAL_REWARD_CAP,
   attributionWindowDays: settings.attributionWindowDays,
   completionDelayHours: settings.completionDelayHours
 });
@@ -68,7 +65,6 @@ const getReferralOverview = catchAsync(async (req, res) => {
     ReferralAccount.findOne({ user: req.user._id }),
     getCurrentSettings()
   ]);
-  const rewardOptions = rewardOptionsFrom(settings);
   const shareable = canShareInvitations(account, settings);
 
   const [invitations, records, referredBookingCount] = await Promise.all([
@@ -102,9 +98,9 @@ const getReferralOverview = catchAsync(async (req, res) => {
     id: invitation._id,
     code: invitation.code,
     label: invitation.label,
-    status: invitation.status,
+    status: invitation.status === 'revoked' ? 'revoked' : 'active',
     createdAt: invitation.createdAt,
-    url: shareable && invitation.status === 'active' ? referralUrlFor(invitation.code) : null
+    url: shareable && invitation.status !== 'revoked' ? referralUrlFor(invitation.code) : null
   }));
   const firstActive = invitationList.find((invitation) => invitation.url);
 
@@ -118,10 +114,6 @@ const getReferralOverview = catchAsync(async (req, res) => {
       invitations: invitationList,
       payoutOnboardingStatus: account?.payoutOnboardingStatus || 'not_started',
       currentSettings: publicSettings(settings),
-      examples: [499, 500, 800, 2500, 5000].map((platformFee) => ({
-        platformFee,
-        reward: calculateReferralReward(platformFee, rewardOptions)
-      })),
       summary
     }
   });
@@ -178,11 +170,11 @@ const createInvitation = catchAsync(async (req, res, next) => {
 
 const revokeInvitation = catchAsync(async (req, res, next) => {
   const invitation = await ReferralInvitation.findOneAndUpdate(
-    { _id: req.params.invitationId, referrer: req.user._id, status: 'active' },
+    { _id: req.params.invitationId, referrer: req.user._id, status: { $ne: 'revoked' } },
     { $set: { status: 'revoked' } },
     { new: true }
   );
-  if (!invitation) return next(new AppError('Only your unused invitations can be revoked.', 404));
+  if (!invitation) return next(new AppError('Referral code not found.', 404));
   res.status(200).json({ status: 'success', data: { id: invitation._id, status: invitation.status } });
 });
 
@@ -198,7 +190,7 @@ const createAttribution = catchAsync(async (req, res, next) => {
     const existing = await ReferralAttribution.findOne({ tokenHash: hashToken(existingToken), status: 'active' });
     if (existing && existing.expiresAt > new Date()) {
       const invitation = existing.invitation ? await ReferralInvitation.findById(existing.invitation) : null;
-      if (!invitation || isInvitationUsable(invitation, req.user?._id)) {
+      if (!invitation || isInvitationUsable(invitation)) {
         return res.status(200).json({ status: 'success', data: { token: existingToken, expiresAt: existing.expiresAt, preserved: true } });
       }
     }
@@ -306,11 +298,12 @@ const getAdminOverview = catchAsync(async (req, res) => {
   });
 });
 
-// The platform-fee minimum is a fixed program rule. Administrators can tune the reward
-// percentage and cap; each booking keeps the rate and cap in force when it was made.
+// The reward percentage, cap, and absence of a minimum fee are program terms, not settings.
+// Administrators manage enrollment, the attribution window, the completion delay, and
+// whether reward transfers are enabled.
 const updateAdminSettings = catchAsync(async (req, res, next) => {
   const current = await getCurrentSettings();
-  const { rewardPercent, rewardCap, attributionWindowDays, completionDelayHours, enabled, payoutsEnabled, reason } = req.body;
+  const { attributionWindowDays, completionDelayHours, enabled, payoutsEnabled, reason } = req.body;
   if (!String(reason || '').trim()) return next(new AppError('A reason is required for program setting changes.', 400));
   if ((enabled !== undefined && typeof enabled !== 'boolean') || (payoutsEnabled !== undefined && typeof payoutsEnabled !== 'boolean')) {
     return next(new AppError('Enabled settings must be boolean values.', 400));
@@ -320,18 +313,15 @@ const updateAdminSettings = catchAsync(async (req, res, next) => {
     termsVersion: current.termsVersion,
     enabled: enabled === undefined ? current.enabled : enabled,
     rulesModel: REFERRAL_RULES_MODEL,
-    rewardPercent: Number(rewardPercent ?? current.rewardPercent ?? REFERRAL_REWARD_PERCENT),
-    rewardCap: Number(rewardCap ?? current.rewardCap ?? REFERRAL_REWARD_CAP),
-    minimumPlatformFee: MINIMUM_PLATFORM_FEE,
+    rewardPercent: REFERRAL_REWARD_PERCENT,
+    rewardCap: REFERRAL_REWARD_CAP,
+    minimumPlatformFee: 0,
     attributionWindowDays: Number(attributionWindowDays ?? current.attributionWindowDays),
     completionDelayHours: Number(completionDelayHours ?? current.completionDelayHours),
     payoutsEnabled: payoutsEnabled === undefined ? Boolean(current.payoutsEnabled) : payoutsEnabled,
     changedBy: req.user._id,
     changeReason: String(reason).trim()
   };
-  if (!(nextSettings.rewardPercent > 0 && nextSettings.rewardPercent <= 25) || !(nextSettings.rewardCap > 0 && nextSettings.rewardCap <= 1000)) {
-    return next(new AppError('Reward percentage must be above 0 and at most 25, and the cap above 0 and at most 1000.', 400));
-  }
   if (!Number.isFinite(nextSettings.attributionWindowDays) || nextSettings.attributionWindowDays < 1 || nextSettings.attributionWindowDays > 90 ||
       !Number.isFinite(nextSettings.completionDelayHours) || nextSettings.completionDelayHours < 0 || nextSettings.completionDelayHours > 720) {
     return next(new AppError('One or more referral settings are outside the allowed range.', 400));

@@ -18,9 +18,14 @@ const referralCommissionSchema = new Schema(
   {
     booking: { type: Schema.Types.ObjectId, ref: 'Booking', required: true, unique: true, index: true },
     attribution: { type: Schema.Types.ObjectId, ref: 'ReferralAttribution', required: true, index: true },
-    // Cleared when an unpaid reward is canceled so the invitation can be used again.
+    // Earlier terms allowed one reward per invitation; rewards created then still carry it.
     invitation: { type: Schema.Types.ObjectId, ref: 'ReferralInvitation', default: null },
     canceledInvitation: { type: Schema.Types.ObjectId, ref: 'ReferralInvitation', default: null },
+    // The referral link/code that attributed the customer (an audit reference only).
+    sourceInvitation: { type: Schema.Types.ObjectId, ref: 'ReferralInvitation', default: null },
+    // The referred customer while this reward is live. It is cleared when an unpaid reward is
+    // canceled, so a customer holds at most one live reward and can still qualify later.
+    customerClaim: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     referredUser: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     referrer: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     vendor: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -30,6 +35,8 @@ const referralCommissionSchema = new Schema(
     paymentIntentIds: [{ type: String, trim: true }],
     // Booking-fee revenue for this one booking (never combined with other bookings).
     bookingTotal: { type: Number, default: 0, min: 0 },
+    // Taxes are not part of Gala Tab's booking fee; the fee and refunds are measured without them.
+    taxAmount: { type: Number, default: 0, min: 0 },
     platformFeeAmount: { type: Number, default: 0, min: 0 },
     refundedAmount: { type: Number, default: 0, min: 0 },
     retainedPlatformFee: { type: Number, default: 0, min: 0 },
@@ -64,10 +71,16 @@ const referralCommissionSchema = new Schema(
   { timestamps: true }
 );
 
-// An invitation (link + code) can hold at most one live reward.
+// Rewards created under earlier terms: an invitation (link + code) held at most one reward.
 referralCommissionSchema.index(
   { invitation: 1 },
   { unique: true, partialFilterExpression: { invitation: { $type: 'objectId' } } }
+);
+
+// One live reward per referred customer, enforced by the database.
+referralCommissionSchema.index(
+  { customerClaim: 1 },
+  { unique: true, partialFilterExpression: { customerClaim: { $type: 'objectId' } } }
 );
 
 module.exports = model('ReferralCommission', referralCommissionSchema);
