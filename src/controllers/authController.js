@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 const crypto = require('node:crypto');
 const { PhoneNumberFormat, PhoneNumberUtil } = require('google-libphonenumber');
 const User = require('../models/users/User');
@@ -13,6 +14,7 @@ const { redisClient } = require('../config/redisConfig');
 const Customers = require('../models/users/Customer');
 const Admins = require('../models/users/Admin');
 const Vendors = require('../models/users/Vendor');
+const PendingRegistration = require('../models/users/PendingRegistration');
 
 const { roles } = require('../utils/types');
 const { registerUserSchema } = require('../utils/joi/userValidation');
@@ -104,7 +106,10 @@ const registerUser = catchAsync(async (req, res, next) => {
     return next(new AppError('Validation failed', 400, { contact: err.message }));
   }
 
-  // Check if email or contact already exists
+  // Only block signup if a real, already-registered account owns this email
+  // or contact. Abandoned/unverified signups never reach the Users
+  // collection anymore (they live in PendingRegistration until OTP
+  // verification completes), so they never block a retry here.
   const existingUsers = await User.findOne({
     $or: [{ email }, { contact: normalizedContact }]
   });
@@ -130,13 +135,8 @@ const registerUser = catchAsync(async (req, res, next) => {
     }
   }
 
-  // Prepare user data
-  const UserData = {
-    ...req.body,
-    contact: normalizedContact
-  };
   const validRoles = [roles.ADMIN, roles.VENDOR, roles.CUSTOMER];
-  const userRole = UserData?.role?.toLowerCase();
+  const userRole = req.body?.role?.toLowerCase();
   if (!validRoles.includes(userRole)) {
     return next(
       new AppError('Invalid role provided', 400, {
@@ -144,44 +144,291 @@ const registerUser = catchAsync(async (req, res, next) => {
       })
     );
   }
-  let newUser;
-  if (UserData?.role === roles.CUSTOMER) {
-    newUser = new Customers(UserData);
-    await newUser.save({ validateBeforeSave: false });
-  } else if (UserData?.role === roles.VENDOR) {
-    UserData.status = 'Active';
-    newUser = new Vendors(UserData);
-    await newUser.save({ validateBeforeSave: false });
-  } else if (UserData?.role === roles.ADMIN) {
-    newUser = new Admins(UserData);
-    await newUser.save({ validateBeforeSave: false });
-  }
-  res.locals.dataId = newUser._id;
-  res.locals.actor = newUser;
 
-  // Activity log
-  createLog({
-    actorId: newUser._id,
-    actorModel: newUser.role === 'admin' ? 'admin' : newUser.role === 'vendor' ? 'vendor' : 'customer',
-    action: 'REGISTER',
-    description: `New ${newUser.role} account registered: ${newUser.email}`,
-    ipAddress: req.ip || req.headers['x-forwarded-for'],
+  const { password } = req.body;
+  if (!password || password.length < 6) {
+    return next(
+      new AppError('Validation failed', 400, {
+        password: 'Password must be at least 6 characters long.'
+      })
+    );
+  }
+
+  // Hash the password up front so it is never persisted in plain text, even
+  // temporarily in PendingRegistration. The base User pre-save hook detects
+  // an already-hashed value and will not re-hash it when the real account is
+  // finally created.
+  const hashedPassword = await bcrypt.hash(password, 12);
+
+  const pendingData = {
+    ...req.body,
+    contact: normalizedContact,
+    role: userRole,
+    password: hashedPassword
+  };
+  delete pendingData.confirmPassword;
+
+  // Upsert by email so a user who abandons signup can simply try again with
+  // the same email without hitting an "already exists" error.
+  const pendingUser = await PendingRegistration.findOneAndUpdate({ email }, pendingData, {
+    upsert: true,
+    new: true,
+    runValidators: true,
+    setDefaultsOnInsert: true
   });
 
   return res.status(200).json({
     status: 'success',
-    message: `Account created successfully for ${newUser.email}`,
+    message: `Verification required to finish creating the account for ${pendingUser.email}`,
     data: {
-      _id: newUser._id,
-      fullName: newUser.fullName,
-      firstName: newUser.firstName,
-      lastName: newUser.lastName,
-      email: newUser.email,
-      contact: newUser.contact,
-      countryCode: newUser.countryCode,
-      role: newUser.role
-    },
-    dataId: newUser._id
+      firstName: pendingUser.firstName,
+      lastName: pendingUser.lastName,
+      email: pendingUser.email,
+      contact: pendingUser.contact,
+      countryCode: pendingUser.countryCode,
+      role: pendingUser.role
+    }
+  });
+});
+
+// Creates the real account from a verified PendingRegistration record, then
+// removes the pending record. Shared by both the email and phone signup
+// verification flows below.
+const finalizePendingRegistration = async (pendingUser, verifiedChannel) => {
+  const UserData = pendingUser.toObject();
+  delete UserData._id;
+  delete UserData.OTP;
+  delete UserData.otpExpiration;
+  delete UserData.createdAt;
+  delete UserData.updatedAt;
+  delete UserData['__v'];
+
+  if (verifiedChannel === 'email') UserData.emailVerified = true;
+  if (verifiedChannel === 'contact') UserData.contactVerified = true;
+
+  let newUser;
+  if (UserData.role === roles.CUSTOMER) {
+    newUser = new Customers(UserData);
+  } else if (UserData.role === roles.VENDOR) {
+    UserData.status = 'Active';
+    newUser = new Vendors(UserData);
+  } else if (UserData.role === roles.ADMIN) {
+    newUser = new Admins(UserData);
+  }
+  await newUser.save({ validateBeforeSave: false });
+
+  createLog({
+    actorId: newUser._id,
+    actorModel: newUser.role === 'admin' ? 'admin' : newUser.role === 'vendor' ? 'vendor' : 'customer',
+    action: 'REGISTER',
+    description: `New ${newUser.role} account registered: ${newUser.email}`
+  });
+
+  await PendingRegistration.deleteOne({ _id: pendingUser._id });
+
+  return newUser;
+};
+
+const sendSignupEmailOtp = catchAsync(async (req, res, next) => {
+  const { email } = req.body;
+
+  const { error } = emailVerifySchema.validate(req.body, {
+    abortEarly: false,
+    allowUnknown: true
+  });
+
+  if (error) {
+    const errorFields = error.details.reduce((acc, err) => {
+      acc[err.context.key] = err.message.replace(/['"]/g, '');
+      return acc;
+    }, {});
+
+    return next(new AppError('Validation failed', 400, { errorFields }));
+  }
+
+  const pendingUser = await PendingRegistration.findOne({ email });
+  if (!pendingUser) {
+    return next(new AppError('user not found', 400, { user: 'user not found' }));
+  }
+
+  // generate otp to send it to user email
+  const { otp, expires, hash } = generateOTP(6, 6); // valid for 6 minutes
+
+  await sendEmail('emailVerify', 'Verify Your Email', email, {
+    firstName: pendingUser.firstName,
+    otp
+  });
+  console.log('Signup OTP Email sent');
+
+  pendingUser.OTP = hash;
+  pendingUser.otpExpiration = expires;
+  await pendingUser.save();
+
+  return res.status(200).json({
+    status: 'success',
+    message: `OTP sent to the ${email}`,
+    data: { expiresIn: expires }
+  });
+});
+
+const sendSignupPhoneOtp = catchAsync(async (req, res, next) => {
+  const { contact } = req.body;
+
+  if (!contact) {
+    return next(
+      new AppError('Validation failed', 400, {
+        contact: 'Contact number is required.'
+      })
+    );
+  }
+
+  const pendingUser = await PendingRegistration.findOne({ contact });
+  if (!pendingUser) {
+    return next(new AppError('user not found', 400, { user: 'user not found' }));
+  }
+
+  const { otp, expires, hash } = generateOTP(6, 6); // valid for 6 minutes
+  const response = await sendTwilioSms(contact, `Your verification code is ${otp}. `);
+  console.log('Signup OTP on Contact sent', response);
+
+  pendingUser.OTP = hash;
+  pendingUser.otpExpiration = expires;
+  await pendingUser.save();
+
+  return res.status(200).json({
+    status: 'success',
+    message: `OTP sent to the ${contact}`,
+    data: { expiresIn: expires }
+  });
+});
+
+const verifySignupEmailOtp = catchAsync(async (req, res, next) => {
+  const { email, otp } = req.body;
+
+  const { error } = emailOTPVerifySchema.validate(req.body, {
+    abortEarly: false
+  });
+
+  if (error) {
+    const errorFields = error.details.reduce((acc, err) => {
+      acc[err.context.key] = err.message.replace(/['"]/g, '');
+      return acc;
+    }, {});
+
+    return next(new AppError('Validation failed', 400, { errorFields }));
+  }
+
+  const pendingUser = await PendingRegistration.findOne({ email });
+  if (!pendingUser) {
+    return next(new AppError('user not found', 400, { user: 'user not found' }));
+  }
+
+  // check for otp expiration
+  if (pendingUser?.otpExpiration < Date.now()) {
+    return next(new AppError('Invalid or expired OTP.', 400, { otp: 'Invalid or expired OTP.' }));
+  }
+
+  const newHash = crypto
+    .createHmac('sha256', process.env.OTP_SECRET)
+    .update(`${otp}${pendingUser?.otpExpiration}`)
+    .digest('hex');
+
+  if (pendingUser?.OTP !== newHash) {
+    return next(new AppError('Invalid or expired OTP.', 400, { otp: 'Invalid or expired OTP.' }));
+  }
+
+  const newUser = await finalizePendingRegistration(pendingUser, 'email');
+
+  const userToSend = removeFields(newUser.toObject(), [
+    'password',
+    'passwordChangedAt',
+    'OTP',
+    'otpExpiration',
+    'otpVerifiedAt',
+    'passwordResetToken',
+    'passwordResetExpires',
+    'lastLoginAt',
+    'createdAt',
+    'updatedAt'
+  ]);
+
+  const token = signToken(userToSend);
+
+  res.locals.dataId = newUser._id;
+  res.locals.actor = newUser;
+
+  const isSignupVerification = !newUser.is2FAEnabled;
+
+  return res.status(200).json({
+    status: 'success',
+    token: isSignupVerification ? null : token,
+    redirecttologin: isSignupVerification,
+    data: userToSend
+  });
+});
+
+const verifySignupPhoneOtp = catchAsync(async (req, res, next) => {
+  const { contact, otp } = req.body;
+
+  if (!contact || !otp) {
+    const fieldErrors = {
+      contact: contact ? undefined : 'Contact number is required.',
+      otp: otp ? undefined : 'OTP is required.'
+    };
+    return next(new AppError('Validation failed', 400, fieldErrors));
+  }
+
+  const pendingUser = await PendingRegistration.findOne({ contact });
+  if (!pendingUser) {
+    return next(new AppError('user not found', 400, { user: 'user not found' }));
+  }
+
+  // check for otp expiration
+  if (pendingUser?.otpExpiration < Date.now()) {
+    return next(new AppError('Invalid or expired OTP.', 400, { otp: 'Invalid or expired OTP.' }));
+  }
+
+  const newHash = crypto
+    .createHmac('sha256', process.env.OTP_SECRET)
+    .update(`${otp}${pendingUser?.otpExpiration}`)
+    .digest('hex');
+
+  if (pendingUser?.OTP !== newHash) {
+    return next(new AppError('Invalid or expired OTP.', 400, { otp: 'Invalid or expired OTP.' }));
+  }
+
+  const newUser = await finalizePendingRegistration(pendingUser, 'contact');
+
+  const userToSend = {
+    _id: newUser._id,
+    firstName: newUser.firstName,
+    lastName: newUser.lastName,
+    email: newUser.email,
+    contact: newUser.contact,
+    countryCode: newUser.countryCode,
+    countryName: newUser.countryName,
+    role: newUser.role,
+    emailVerified: newUser.emailVerified,
+    contactVerified: newUser.contactVerified,
+    subscription: newUser.subscription,
+    provider: newUser.provider,
+    profileCompleted: newUser.profileCompleted,
+    isVerified: newUser.isVerified,
+    fullName: newUser.fullName
+  };
+
+  const token = signToken(userToSend);
+
+  res.locals.dataId = newUser._id;
+  res.locals.actor = newUser;
+
+  const isSignupVerification = !newUser.is2FAEnabled;
+
+  return res.status(200).json({
+    status: 'success',
+    token: isSignupVerification ? null : token,
+    redirecttologin: isSignupVerification,
+    data: userToSend
   });
 });
 
@@ -1103,6 +1350,10 @@ module.exports = {
   verifyPhoneotp,
   sendEmailVerification,
   sendPhoneVerification,
+  sendSignupEmailOtp,
+  sendSignupPhoneOtp,
+  verifySignupEmailOtp,
+  verifySignupPhoneOtp,
   forgotPassword,
   verifyForgetOtp,
   resetPassword,

@@ -294,6 +294,14 @@ userSchema.pre('save', async function (next) {
     return next(new Error('Password is required for local users.'));
   }
 
+  // Signup flow pre-hashes the password while it's still sitting in
+  // PendingRegistration (see authController.js), then copies it over as-is
+  // when the verified account is finally created here. Skip re-hashing an
+  // already-bcrypt-hashed value to avoid corrupting it.
+  if (/^\$2[aby]\$\d{2}\$/.test(this.password)) {
+    return next();
+  }
+
   // Example validation for password complexity (you can customize this)
   if (this.password.length < 6) {
     return next(new Error('Password must be at least 6 characters long.'));

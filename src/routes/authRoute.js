@@ -10,6 +10,10 @@ const {
   verifyPhoneotp,
   sendEmailVerification,
   sendPhoneVerification,
+  sendSignupEmailOtp,
+  sendSignupPhoneOtp,
+  verifySignupEmailOtp,
+  verifySignupPhoneOtp,
   forgotPassword,
   resetPassword,
   createFirstPassword,
@@ -179,6 +183,15 @@ router.post('/resend-otp-email', logActionMiddleware('Resend OTP Email', 'User')
 router.post('/send-otp-number', logActionMiddleware('Resend OTP Number', 'User'), sendPhoneVerification);
 router.post('/verifyPhoneotp', logActionMiddleware('Verify Phone OTP', 'User'), verifyPhoneotp);
 router.post('/resend-otp-number', logActionMiddleware('Resend OTP Number', 'User'), resendOtpNumber);
+
+// Signup verification — these operate on PendingRegistration records (no
+// account exists yet) and only create the real account once OTP succeeds.
+// Kept separate from the routes above, which also serve existing-user 2FA
+// login verification and must keep operating on the real Users collection.
+router.post('/signup/send-otp-email', logActionMiddleware('Send Signup OTP Email', 'User'), sendSignupEmailOtp);
+router.post('/signup/verify-otp-email', logActionMiddleware('Verify Signup OTP Email', 'User'), verifySignupEmailOtp);
+router.post('/signup/send-otp-number', logActionMiddleware('Send Signup OTP Number', 'User'), sendSignupPhoneOtp);
+router.post('/signup/verify-otp-number', logActionMiddleware('Verify Signup OTP Number', 'User'), verifySignupPhoneOtp);
 
 router.post('/forgotPassword', logActionMiddleware('Forgot Password', 'User'), forgotPassword);
 router.patch('/resetPassword', logActionMiddleware('Reset Password', 'User'), resetPassword);
