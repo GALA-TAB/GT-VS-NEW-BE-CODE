@@ -271,6 +271,25 @@ const ServiceListingSchema = new mongoose.Schema(
       type: String,
       trim: true
     },
+    // Vendor-defined additional contract terms (e.g. NDAs, damage/deposit
+    // stipulations). Rendered on the listing page's "Additional Terms"
+    // section and in the booking agreement's Terms & Conditions / Damage &
+    // Security Deposit sections. Shape must match serviceupdateSchema's
+    // `clauses` validation in utils/joi/serviceValidation.js.
+    clauses: [
+      {
+        title: {
+          type: String,
+          trim: true,
+          maxlength: 200
+        },
+        description: {
+          type: String,
+          trim: true,
+          maxlength: 2000
+        }
+      }
+    ],
     completed: {
       type: Boolean,
       default: false
