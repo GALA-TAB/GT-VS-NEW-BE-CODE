@@ -4,7 +4,7 @@
 // stored as evidence. Authoritative facts (who signed, when, from where) are
 // stamped server-side and are never taken from this object.
 
-const ACK_KEYS = ['cancellation', 'terms', 'damage', 'finalConfirmation'];
+const ACK_KEYS = ['cancellation', 'terms', 'damage', 'additionalTermsAttachment', 'finalConfirmation'];
 const MAX_SECTIONS = 10;
 const MAX_CONTENT_LENGTH = 20000;
 

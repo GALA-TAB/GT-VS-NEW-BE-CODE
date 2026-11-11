@@ -50,6 +50,25 @@ const BookingAgreementSchema = new Schema(
       type: String,
     },
 
+    // Vendor's uploaded external agreement/contract (PDF, Word doc, or
+    // image) shown to the customer at checkout, snapshotted so later
+    // vendor edits/removal of the file don't change historical evidence.
+    additionalTermsAttachment: {
+      url: String,
+      fileName: String,
+      fileType: String,
+    },
+
+    // Separate signature/initials captured specifically for the uploaded
+    // additional-terms attachment (distinct from the main booking
+    // signature above), only present when the listing had an attachment.
+    additionalTermsSignatureImage: {
+      type: String,
+    },
+    additionalTermsInitialsImage: {
+      type: String,
+    },
+
     // Agreement snapshot — what the customer agreed to at the time of booking
     agreementSnapshot: {
       serviceName: String,
@@ -97,6 +116,7 @@ const BookingAgreementSchema = new Schema(
       cancellation: acknowledgementSchema,
       terms: acknowledgementSchema,
       damage: acknowledgementSchema,
+      additionalTermsAttachment: acknowledgementSchema,
       finalConfirmation: acknowledgementSchema,
     },
 
