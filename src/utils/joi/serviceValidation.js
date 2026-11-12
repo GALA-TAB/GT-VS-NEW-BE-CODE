@@ -271,17 +271,6 @@ const serviceupdateSchema = Joi.object({
         })
     ).messages({
         "array.base": "Clauses must be an array."
-    }),
-    additionalTermsAttachment: Joi.object({
-        url: Joi.string().trim().uri().allow("").messages({
-            "string.uri": "Additional terms attachment URL must be valid."
-        }),
-        key: Joi.string().trim().max(500).allow(""),
-        fileName: Joi.string().trim().max(255).allow(""),
-        fileType: Joi.string().trim().max(100).allow(""),
-        fileSize: Joi.number().min(0).allow(null)
-    }).messages({
-        "object.base": "Additional terms attachment must be an object."
     })
 
 });

@@ -125,8 +125,6 @@ const createBooking = catchAsync(async (req, res, next) => {
     initialsImage,
     idFrontImage,
     idBackImage,
-    additionalTermsSignatureImage,
-    additionalTermsInitialsImage,
     agreementSnapshot,
     agreementProof,
     referralAttributionToken,
@@ -499,15 +497,6 @@ const createBooking = catchAsync(async (req, res, next) => {
         initialsImage,
         idFrontImage: idFrontImage || '',
         idBackImage: idBackImage || '',
-        ...(listingExists?.additionalTermsAttachment?.url && {
-          additionalTermsAttachment: {
-            url: listingExists.additionalTermsAttachment.url,
-            fileName: listingExists.additionalTermsAttachment.fileName,
-            fileType: listingExists.additionalTermsAttachment.fileType,
-          },
-          additionalTermsSignatureImage,
-          additionalTermsInitialsImage,
-        }),
         agreementSnapshot: agreementSnapshot || {
           serviceName: listingExists?.title,
           vendorName: `${listingExists?.vendorId?.firstName || ''} ${listingExists?.vendorId?.lastName || ''}`.trim(),

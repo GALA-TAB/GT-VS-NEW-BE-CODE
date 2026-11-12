@@ -290,17 +290,6 @@ const ServiceListingSchema = new mongoose.Schema(
         }
       }
     ],
-    // Optional external agreement/contract (PDF, Word doc, or image) the
-    // vendor uploads for customers to review and separately sign at checkout.
-    // Empty strings (not null) represent "no attachment" so the field stays
-    // a non-empty object the vendor stepper's autosave will persist.
-    additionalTermsAttachment: {
-      url: { type: String, trim: true, default: '' },
-      key: { type: String, trim: true, default: '' },
-      fileName: { type: String, trim: true, default: '' },
-      fileType: { type: String, trim: true, default: '' },
-      fileSize: { type: Number, default: 0 }
-    },
     completed: {
       type: Boolean,
       default: false
