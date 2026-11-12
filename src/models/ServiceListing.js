@@ -286,7 +286,7 @@ const ServiceListingSchema = new mongoose.Schema(
         description: {
           type: String,
           trim: true,
-          maxlength: 2000
+          maxlength: 10000
         }
       }
     ],

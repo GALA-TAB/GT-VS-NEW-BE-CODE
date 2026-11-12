@@ -265,8 +265,8 @@ const serviceupdateSchema = Joi.object({
             title: Joi.string().trim().max(200).allow("").messages({
                 "string.max": "Clause title must be at most 200 characters."
             }),
-            description: Joi.string().trim().max(2000).allow("").messages({
-                "string.max": "Clause description must be at most 2000 characters."
+            description: Joi.string().trim().max(10000).allow("").messages({
+                "string.max": "Clause description must be at most 10000 characters."
             })
         })
     ).messages({
