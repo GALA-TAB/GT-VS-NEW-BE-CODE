@@ -954,6 +954,49 @@ const getAllBookings = catchAsync(async (req, res, next) => {
   });
 });
 
+// Average of the reviews other users (vendors) left on a customer's bookings
+const customerRatingStages = [
+  {
+    $lookup: {
+      from: 'bookings',
+      localField: 'user._id',
+      foreignField: 'user',
+      pipeline: [{ $project: { _id: 1 } }],
+      as: 'customerBookings'
+    }
+  },
+  {
+    $lookup: {
+      from: 'reviews',
+      let: { bookingIds: '$customerBookings._id', customerId: '$user._id' },
+      pipeline: [
+        {
+          $match: {
+            $expr: {
+              $and: [
+                { $in: ['$reviewOn', '$$bookingIds'] },
+                { $ne: ['$reviewer', '$$customerId'] },
+                { $eq: ['$isDeleted', false] }
+              ]
+            }
+          }
+        },
+        { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } }
+      ],
+      as: 'customerReviewStats'
+    }
+  },
+  {
+    $addFields: {
+      'user.averageRating': {
+        $round: [{ $ifNull: [{ $first: '$customerReviewStats.average' }, 0] }, 1]
+      },
+      'user.reviewCount': { $ifNull: [{ $first: '$customerReviewStats.count' }, 0] }
+    }
+  },
+  { $project: { customerBookings: 0, customerReviewStats: 0 } }
+];
+
 // Get all bookings for vendor listing services
 const getAllBookingsForVendorService = catchAsync(async (req, res, next) => {
   const page = parseInt(req.query.page) || 1;
@@ -993,7 +1036,8 @@ const getAllBookingsForVendorService = catchAsync(async (req, res, next) => {
       ...query,
       { $sort: { createdAt: -1 } },
       { $skip: (page - 1) * limit },
-      { $limit: limit }
+      { $limit: limit },
+      ...customerRatingStages
     ])
   ]);
 
