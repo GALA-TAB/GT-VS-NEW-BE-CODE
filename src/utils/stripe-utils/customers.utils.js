@@ -113,6 +113,11 @@ module.exports = {
   cancelPaymentIntent: async (params) => {
     const { paymentIntentId } = params;
     try {
+      // Stripe errors if the intent is already canceled (e.g. authorization expired), so treat that as done
+      const existing = await stripe.paymentIntents.retrieve(paymentIntentId);
+      if (existing.status === 'canceled') {
+        return existing;
+      }
       const canceledPayment = await stripe.paymentIntents.cancel(paymentIntentId);
       return canceledPayment;
     } catch (error) {
