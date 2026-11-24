@@ -1766,7 +1766,8 @@ const extendBooking = catchAsync(async (req, res, next) => {
     new Date(findbooking.checkIn),
     new Date(findbooking.checkOut),
     findbooking.service.serviceDays,
-    findbooking.addOnServices || [],
+    // Add-ons already on the booking are stored in servicePrice; leaving them out would charge them again
+    findbooking.servicePrice || [],
     (serviceInfo = {
       timezone
     })
