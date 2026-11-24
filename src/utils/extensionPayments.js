@@ -21,12 +21,28 @@ const getMinHoursBeforeCheckIn = () => {
 const isExpired = (extension, now = new Date()) =>
   Boolean(extension?.expiresAt) && new Date(extension.expiresAt).getTime() <= now.getTime();
 
-// Splits the price change into what to charge and what to give back (both in dollars, 2 decimals).
-const planExtensionPayment = (previousPrice, currentPrice) => {
-  const diffCents = toCents(currentPrice) - toCents(previousPrice);
+// The sales tax rate a change is charged at: the rate the booking itself was taxed at.
+// Bookings made before tax was added have no rate and are not taxed now.
+const getTaxRate = (booking) => {
+  const rate = Number(booking?.taxRate);
+  return Number.isFinite(rate) && rate > 0 ? rate : 0;
+};
+
+// Splits the price change into what to charge and what to give back (all in dollars, 2 decimals).
+// Prices are before tax; tax at taxRate% is added to a charge and returned with a refund.
+// deltaBase / deltaTotal are signed (negative for a decrease) for updating the booking's totals.
+const planExtensionPayment = (previousPrice, currentPrice, taxRate = 0) => {
+  const baseCents = toCents(currentPrice) - toCents(previousPrice);
+  const taxCents = Math.round((Math.abs(baseCents) * Number(taxRate || 0)) / 100);
+  const totalCents = Math.abs(baseCents) + taxCents;
+  const sign = baseCents < 0 ? -1 : 1;
   return {
-    chargeAmount: diffCents > 0 ? diffCents / 100 : 0,
-    refundAmount: diffCents < 0 ? -diffCents / 100 : 0
+    chargeAmount: baseCents > 0 ? totalCents / 100 : 0,
+    refundAmount: baseCents < 0 ? totalCents / 100 : 0,
+    taxAmount: taxCents / 100,
+    taxRate: Number(taxRate || 0),
+    deltaBase: baseCents === 0 ? 0 : (sign * Math.abs(baseCents)) / 100,
+    deltaTotal: baseCents === 0 ? 0 : (sign * totalCents) / 100
   };
 };
 
@@ -109,6 +125,7 @@ module.exports = {
   buildExpiresAt,
   getMinHoursBeforeCheckIn,
   isExpired,
+  getTaxRate,
   planExtensionPayment,
   isIntentUsable,
   describePaymentError,

@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   planExtensionPayment,
+  getTaxRate,
   isExpired,
   isIntentUsable,
   describePaymentError,
@@ -10,15 +11,48 @@ const {
 } = require('./extensionPayments');
 
 test('charges only the increase and avoids floating point drift', () => {
-  assert.deepEqual(planExtensionPayment(100.1, 250.3), { chargeAmount: 150.2, refundAmount: 0 });
+  const plan = planExtensionPayment(100.1, 250.3);
+  assert.equal(plan.chargeAmount, 150.2);
+  assert.equal(plan.refundAmount, 0);
+});
+
+test('adds the booking tax to a charge and returns it with a refund', () => {
+  assert.deepEqual(planExtensionPayment(100, 200, 8.875), {
+    chargeAmount: 108.88,
+    refundAmount: 0,
+    taxAmount: 8.88,
+    taxRate: 8.875,
+    deltaBase: 100,
+    deltaTotal: 108.88
+  });
+  assert.deepEqual(planExtensionPayment(200, 150, 8.875), {
+    chargeAmount: 0,
+    refundAmount: 54.44,
+    taxAmount: 4.44,
+    taxRate: 8.875,
+    deltaBase: -50,
+    deltaTotal: -54.44
+  });
+});
+
+test('untaxed bookings are not taxed on a change', () => {
+  assert.equal(getTaxRate({ taxRate: 0 }), 0);
+  assert.equal(getTaxRate({}), 0);
+  assert.equal(getTaxRate({ taxRate: 8.875 }), 8.875);
+  assert.equal(planExtensionPayment(100, 150, getTaxRate({})).chargeAmount, 50);
 });
 
 test('refunds a decrease and charges nothing', () => {
-  assert.deepEqual(planExtensionPayment(300, 275.5), { chargeAmount: 0, refundAmount: 24.5 });
+  const plan = planExtensionPayment(300, 275.5);
+  assert.equal(plan.chargeAmount, 0);
+  assert.equal(plan.refundAmount, 24.5);
 });
 
 test('moves no money when the price is unchanged', () => {
-  assert.deepEqual(planExtensionPayment(120, 120), { chargeAmount: 0, refundAmount: 0 });
+  const plan = planExtensionPayment(120, 120, 8.875);
+  assert.equal(plan.chargeAmount, 0);
+  assert.equal(plan.refundAmount, 0);
+  assert.equal(plan.taxAmount, 0);
 });
 
 test('expiry applies only when expiresAt has passed', () => {

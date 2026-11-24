@@ -38,6 +38,15 @@ const ExtensionBookingSchema = new Schema(
       required: true,
       trim: true
     },
+    // Sales tax included in newChargeAmount (or refundAmount), at the booking's own rate
+    taxAmount: {
+      type: Number,
+      default: 0
+    },
+    taxRate: {
+      type: Number,
+      default: 0
+    },
     paymentIntentId: {
       type: String,
       trim: true

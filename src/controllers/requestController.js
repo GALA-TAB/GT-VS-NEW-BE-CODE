@@ -1784,10 +1784,15 @@ const extendBooking = catchAsync(async (req, res, next) => {
   );
 
   console.log('this is previous price', previousPrice, 'this is current price', currentPrice);
-  const { chargeAmount, refundAmount } = extensionPayments.planExtensionPayment(
-    previousPrice,
-    currentPrice
-  );
+  const { chargeAmount, refundAmount, taxAmount, taxRate, deltaBase, deltaTotal } =
+    extensionPayments.planExtensionPayment(
+      previousPrice,
+      currentPrice,
+      extensionPayments.getTaxRate(findbooking)
+    );
+  // The booking's stored total includes tax (and any discount), so the new total is that total plus
+  // the tax-inclusive change rather than the freshly computed pre-tax price
+  const newBookingTotal = parseFloat(((findbooking.totalPrice || 0) + deltaTotal).toFixed(2));
   const totalPriceforConfirm = chargeAmount;
   let paymentIntent = null;
 
@@ -1838,6 +1843,8 @@ const extendBooking = catchAsync(async (req, res, next) => {
         : 'authorized'
       : 'none',
     refundAmount,
+    taxAmount,
+    taxRate,
     expiresAt: req.user.role === 'admin' ? null : extensionPayments.buildExpiresAt(),
     baseline: {
       checkIn: findbooking.checkIn,
@@ -1859,7 +1866,7 @@ const extendBooking = catchAsync(async (req, res, next) => {
       startDate,
       request: 'pending',
       newChargeAmount: totalPriceforConfirm,
-      totalAmount: currentPrice,
+      totalAmount: newBookingTotal,
       paymentIntentId: paymentIntent?.id,
       amount: currentPrice,
       vendorId: findbooking?.service?.vendorId?._id,
@@ -1872,7 +1879,7 @@ const extendBooking = catchAsync(async (req, res, next) => {
     sendNotification({
       userId: findbooking?.service?.vendorId?._id,
       title: 'Booking Extension Request',
-      message: `${findbooking?.user?.firstName} ${findbooking?.user?.lastName} has requested to change their booking until ${new Date(endDate).toLocaleDateString()}.${chargeAmount > 0 ? ` The customer's card is authorized for $${chargeAmount.toFixed(2)} and is charged only if you accept.` : ''} Please respond within ${extensionPayments.getExpiryHours()} hours or the request expires.`,
+      message: `${findbooking?.user?.firstName} ${findbooking?.user?.lastName} has requested to change their booking until ${new Date(endDate).toLocaleDateString()}.${chargeAmount > 0 ? ` The customer's card is authorized for $${chargeAmount.toFixed(2)}${taxAmount > 0 ? ` (includes $${taxAmount.toFixed(2)} tax)` : ''} and is charged only if you accept.` : ''} Please respond within ${extensionPayments.getExpiryHours()} hours or the request expires.`,
       type: 'booking',
       fortype: 'booking_extension',
       permission: 'bookings',
@@ -1886,7 +1893,7 @@ const extendBooking = catchAsync(async (req, res, next) => {
       startDate,
       request: 'pending',
       newChargeAmount: totalPriceforConfirm,
-      totalAmount: currentPrice,
+      totalAmount: newBookingTotal,
       paymentIntentId: paymentIntent?.id,
       amount: currentPrice,
       vendorId: findbooking?.service?.vendorId?._id,
@@ -1899,7 +1906,7 @@ const extendBooking = catchAsync(async (req, res, next) => {
     sendNotification({
       userId: findbooking?.user?._id,
       title: 'Booking Extension Request from Vendor',
-      message: `${req.user?.firstName} ${req.user?.lastName} has requested to change your booking until ${new Date(endDate).toLocaleDateString()}.${chargeAmount > 0 ? ` If you accept, your card will be charged $${chargeAmount.toFixed(2)}.` : ''}${refundAmount > 0 ? ` If you accept, $${refundAmount.toFixed(2)} will be refunded to you.` : ''} Please respond within ${extensionPayments.getExpiryHours()} hours or the request expires.`,
+      message: `${req.user?.firstName} ${req.user?.lastName} has requested to change your booking until ${new Date(endDate).toLocaleDateString()}.${chargeAmount > 0 ? ` If you accept, your card will be charged $${chargeAmount.toFixed(2)}${taxAmount > 0 ? ` (includes $${taxAmount.toFixed(2)} tax)` : ''}.` : ''}${refundAmount > 0 ? ` If you accept, $${refundAmount.toFixed(2)} will be refunded to you.` : ''} Please respond within ${extensionPayments.getExpiryHours()} hours or the request expires.`,
       type: 'booking',
       fortype: 'booking_extension',
       permission: 'bookings',
@@ -1913,7 +1920,7 @@ const extendBooking = catchAsync(async (req, res, next) => {
       startDate,
       request: 'accept',
       newChargeAmount: totalPriceforConfirm,
-      totalAmount: currentPrice,
+      totalAmount: newBookingTotal,
       paymentIntentId: paymentIntent?.id,
       amount: currentPrice,
       vendorId: findbooking?.service?.vendorId?._id,
@@ -1935,7 +1942,9 @@ const extendBooking = catchAsync(async (req, res, next) => {
 
       findbooking.checkOut = endDate;
       findbooking.checkIn = startDate;
-      findbooking.totalPrice = currentPrice;
+      findbooking.totalPrice = newBookingTotal;
+      findbooking.taxAmount = parseFloat(((findbooking.taxAmount || 0) + Math.sign(deltaTotal) * taxAmount).toFixed(2));
+      findbooking.basePrice = parseFloat(((findbooking.basePrice || 0) + deltaBase).toFixed(2));
 
       findbooking.servicePrice = addOnServices;
       console.log('this is findbooking before save', findbooking);
@@ -2206,7 +2215,17 @@ const acceptorRejectExtension = catchAsync(async (req, res, next) => {
     try {
       booking.checkIn = extensionRequest.startDate;
       booking.checkOut = extensionRequest.endDate;
-      booking.totalPrice = extensionRequest.totalAmount;
+      // New total = the total the request was priced against plus the tax-inclusive change that was
+      // charged or refunded; requests without that snapshot keep the amount stored on the request
+      const signedChange = chargeAmount > 0 ? chargeAmount : -refundAmount;
+      if (extensionRequest.baseline?.totalPrice != null) {
+        const signedTax = signedChange === 0 ? 0 : Math.sign(signedChange) * Number(extensionRequest.taxAmount || 0);
+        booking.totalPrice = parseFloat((Number(extensionRequest.baseline.totalPrice) + signedChange).toFixed(2));
+        booking.taxAmount = parseFloat(((booking.taxAmount || 0) + signedTax).toFixed(2));
+        booking.basePrice = parseFloat(((booking.basePrice || 0) + signedChange - signedTax).toFixed(2));
+      } else {
+        booking.totalPrice = extensionRequest.totalAmount;
+      }
       booking.servicePrice = extensionRequest.servicePrice;
       await booking.save();
     } catch (err) {
