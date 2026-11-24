@@ -13,6 +13,7 @@ const { initializeSocket } = require('./utils/socket');
 require("./utils/updateRequest");   // marks completed bookings + creates escrow hold
 require("./utils/PayoutCrone");     // releases escrow after 72h dispute window
 require('./utils/referralPayoutCron'); // referral reward release checks; transfers run only when admins enable reward payouts
+require('./utils/extensionRequestExpiry'); // expires unanswered booking change requests and releases card holds
 // require("./utils/VendorPayout"); // DISABLED – replaced by escrow-aware PayoutCrone
 // require("./utils/checkstripebalance");
 // require("./utils/autoDeleteOldPendingBookings");

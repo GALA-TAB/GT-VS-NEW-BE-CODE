@@ -7,6 +7,8 @@ const catchAsync = require('../utils/catchAsync');
 const stripe = require('../config/stripe');
 const { requestSchema } = require('../utils/joi/requestValidation');
 const { createPaymentIntents } = require('../utils/stripe-utils/connect-accounts.util');
+const extensionPayments = require('../utils/extensionPayments');
+const { expireExtensionRequest } = require('../utils/extensionRequestExpiry');
 const {
   createCustomer,
   attachPaymentMethod,
@@ -1651,6 +1653,34 @@ const extendBooking = catchAsync(async (req, res, next) => {
     return next(new AppError('You are not authorized to extend this booking', 403));
   }
 
+  if (req.user.role !== 'admin') {
+    const pendingRequest = await Extensionbooking.findOne({
+      bookingId: findbooking._id,
+      request: 'pending',
+      $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }]
+    });
+    if (pendingRequest) {
+      return next(
+        new AppError(
+          'This booking already has a change request waiting for a response. Cancel it or wait for a reply before sending another.',
+          400
+        )
+      );
+    }
+    if (new Date(findbooking.checkOut) <= new Date()) {
+      return next(new AppError('This booking has already ended and can no longer be changed.', 400));
+    }
+    const minHours = extensionPayments.getMinHoursBeforeCheckIn();
+    if (minHours > 0 && new Date(findbooking.checkIn).getTime() - Date.now() < minHours * 3600 * 1000) {
+      return next(
+        new AppError(
+          `Changes must be requested at least ${minHours} hours before check-in. Please message the host instead.`,
+          400
+        )
+      );
+    }
+  }
+
   const existingBooking = await Booking.findOne({
     service: findbooking.service._id,
     status: { $in: ['pending', 'booked'] },
@@ -1753,20 +1783,73 @@ const extendBooking = catchAsync(async (req, res, next) => {
     })
   );
 
-  let totalPriceforConfirm = 0;
-  let paymentIntent = null;
   console.log('this is previous price', previousPrice, 'this is current price', currentPrice);
-  if (currentPrice > previousPrice) {
-    totalPriceforConfirm = currentPrice - previousPrice;
-    paymentIntent = await createPaymentIntents({
-      amount: Math.round(totalPriceforConfirm * 100),
-      currency: 'usd',
-      paymentMethodId: findbooking?.user?.paymentMethodid,
-      customerId: findbooking?.user?.stripeCustomerId,
-      instantBookingCheck: req.user.role === 'customer' || req.user.role === 'vendor' ? false : true
-    });
+  const { chargeAmount, refundAmount } = extensionPayments.planExtensionPayment(
+    previousPrice,
+    currentPrice
+  );
+  const totalPriceforConfirm = chargeAmount;
+  let paymentIntent = null;
+
+  if (refundAmount > 0) {
+    const refundableCents = await extensionPayments.getRefundableCents(findbooking);
+    if (refundableCents < extensionPayments.toCents(refundAmount)) {
+      return next(
+        new AppError(
+          'This change lowers the price, but the refund cannot be issued automatically for this booking. Please contact support.',
+          400
+        )
+      );
+    }
+  }
+
+  // Customer and admin changes are paid on the saved card. Vendor-created changes are charged only
+  // when the customer accepts, so a vendor action never places a hold on the customer's card.
+  if (chargeAmount > 0 && req.user.role !== 'vendor') {
+    try {
+      paymentIntent = await createPaymentIntents({
+        amount: Math.round(totalPriceforConfirm * 100),
+        currency: 'usd',
+        paymentMethodId: findbooking?.user?.paymentMethodid,
+        customerId: findbooking?.user?.stripeCustomerId,
+        instantBookingCheck: req.user.role === 'admin'
+      });
+    } catch (err) {
+      console.error('Extension payment failed:', err.message);
+      return next(new AppError(extensionPayments.describePaymentError(err), 402));
+    }
+    if (!extensionPayments.isIntentUsable(paymentIntent)) {
+      try {
+        await cancelPaymentIntent({ paymentIntentId: paymentIntent.id });
+      } catch (cancelErr) {
+        console.error('Could not release unusable extension intent:', cancelErr.message);
+      }
+      return next(
+        new AppError(extensionPayments.describePaymentError('requires_action'), 402)
+      );
+    }
   }
   console.log('this is payment intent for extension', paymentIntent);
+
+  const paymentFields = {
+    paymentStatus: paymentIntent
+      ? paymentIntent.status === 'succeeded'
+        ? 'captured'
+        : 'authorized'
+      : 'none',
+    refundAmount,
+    expiresAt: req.user.role === 'admin' ? null : extensionPayments.buildExpiresAt(),
+    baseline: {
+      checkIn: findbooking.checkIn,
+      checkOut: findbooking.checkOut,
+      totalPrice: findbooking.totalPrice
+    },
+    consent: {
+      amount: chargeAmount,
+      termsVersion: req.body.consentTermsVersion,
+      acceptedAt: new Date()
+    }
+  };
 
   let extensionBooking;
   if (req.user.role === 'customer') {
@@ -1782,13 +1865,14 @@ const extendBooking = catchAsync(async (req, res, next) => {
       vendorId: findbooking?.service?.vendorId?._id,
       customerId: findbooking?.user?._id,
       servicePrice: addOnServices,
-      requestBy: req.user._id
+      requestBy: req.user._id,
+      ...paymentFields
     });
     console.log('this is extension booking', findbooking?.service?.vendorId?._id);
     sendNotification({
       userId: findbooking?.service?.vendorId?._id,
       title: 'Booking Extension Request',
-      message: `${findbooking?.user?.firstName} ${findbooking?.user?.lastName} has requested to extend their booking until ${new Date(endDate).toLocaleDateString()}`,
+      message: `${findbooking?.user?.firstName} ${findbooking?.user?.lastName} has requested to change their booking until ${new Date(endDate).toLocaleDateString()}.${chargeAmount > 0 ? ` The customer's card is authorized for $${chargeAmount.toFixed(2)} and is charged only if you accept.` : ''} Please respond within ${extensionPayments.getExpiryHours()} hours or the request expires.`,
       type: 'booking',
       fortype: 'booking_extension',
       permission: 'bookings',
@@ -1808,12 +1892,14 @@ const extendBooking = catchAsync(async (req, res, next) => {
       vendorId: findbooking?.service?.vendorId?._id,
       customerId: findbooking?.user?._id,
       requestBy: req.user._id,
-      servicePrice: addOnServices
+      servicePrice: addOnServices,
+      ...paymentFields,
+      consent: undefined
     });
     sendNotification({
       userId: findbooking?.user?._id,
       title: 'Booking Extension Request from Vendor',
-      message: `${req.user?.firstName} ${req.user?.lastName} has requested to extend your booking until ${new Date(endDate).toLocaleDateString()}`,
+      message: `${req.user?.firstName} ${req.user?.lastName} has requested to change your booking until ${new Date(endDate).toLocaleDateString()}.${chargeAmount > 0 ? ` If you accept, your card will be charged $${chargeAmount.toFixed(2)}.` : ''}${refundAmount > 0 ? ` If you accept, $${refundAmount.toFixed(2)} will be refunded to you.` : ''} Please respond within ${extensionPayments.getExpiryHours()} hours or the request expires.`,
       type: 'booking',
       fortype: 'booking_extension',
       permission: 'bookings',
@@ -1833,7 +1919,8 @@ const extendBooking = catchAsync(async (req, res, next) => {
       vendorId: findbooking?.service?.vendorId?._id,
       customerId: findbooking?.user?._id,
       servicePrice: addOnServices,
-      requestBy: req.user._id
+      requestBy: req.user._id,
+      ...paymentFields
     });
     if (paymentIntent && paymentIntent.status === 'succeeded') {
       await PayHistory.create({
@@ -1885,9 +1972,21 @@ const extendBooking = catchAsync(async (req, res, next) => {
   });
 });
 
+// The payment already went through in Stripe, so a failure to write the history row must not undo the change
+const recordPayment = async (data) => {
+  try {
+    await PayHistory.create(data);
+  } catch (err) {
+    console.error('Could not record extension payment history:', err.message);
+  }
+};
+
+const money = (value) => `$${Number(value || 0).toFixed(2)}`;
+
 const acceptorRejectExtension = catchAsync(async (req, res, next) => {
   const { extensionId } = req.params;
-  const { action } = req.body; // 'accept' or 'reject'
+  const { action, consentTermsVersion } = req.body; // action: 'accept' or 'reject'
+  const reason = String(req.body.reason || '').trim().slice(0, 500);
 
   const extensionRequest = await Extensionbooking.findById(extensionId)
     .populate('bookingId')
@@ -1912,29 +2011,219 @@ const acceptorRejectExtension = catchAsync(async (req, res, next) => {
     return next(new AppError('You are not authorized to manage this extension request', 403));
   }
 
+  if (!['accept', 'reject'].includes(action)) {
+    return next(new AppError('Invalid action', 400));
+  }
+  if (extensionRequest.request !== 'pending') {
+    return next(new AppError(`This request was already ${extensionRequest.request}`, 400));
+  }
+  const requesterId = String(extensionRequest.requestBy?._id ?? extensionRequest.requestBy);
+  if (action === 'accept' && req.user.role !== 'admin' && requesterId === String(req.user._id)) {
+    return next(new AppError('You cannot accept your own request', 403));
+  }
+
+  if (extensionPayments.isExpired(extensionRequest)) {
+    await expireExtensionRequest(extensionRequest._id);
+    return next(
+      new AppError('This change request has expired. Please send a new request.', 400)
+    );
+  }
+
+  const chargeAmount = Number(extensionRequest.newChargeAmount || 0);
+  const refundAmount = Number(extensionRequest.refundAmount || 0);
+  const requestedByVendor = String(extensionRequest.vendorId._id) === requesterId;
+  let moneyNote = '';
+
+  // Claim the request before any money moves so a double click or retry can't charge or refund twice
+  const claimRequest = async () =>
+    Boolean(
+      await Extensionbooking.findOneAndUpdate(
+        { _id: extensionRequest._id, request: 'pending' },
+        { request: 'processing' }
+      )
+    );
+  const releaseClaim = () =>
+    Extensionbooking.updateOne(
+      { _id: extensionRequest._id, request: 'processing' },
+      { request: 'pending' }
+    );
+
   if (action === 'accept') {
-    if (extensionRequest?.paymentIntentId) {
-      const capturedPayment = await capturePaymentIntent({
-        paymentIntentId: extensionRequest?.paymentIntentId
-      });
-      console.log('capturedPayment amount', capturedPayment);
-      await PayHistory.create({
-        payoutId: capturedPayment?.id,
-        customerId: extensionRequest?.customerId,
-        bookingId: extensionRequest?.bookingId,
-        bank: capturedPayment?.payment_method?.card?.brand,
-        totalAmount: Math.round(capturedPayment?.amount / 100),
-        status: 'Paid',
-        extensionRequestId: extensionRequest._id
-      });
-    }
-    extensionRequest.request = 'accept';
     const booking = await Booking.findById(extensionRequest.bookingId);
-    booking.checkIn = extensionRequest.startDate;
-    booking.checkOut = extensionRequest.endDate;
-    booking.totalPrice = extensionRequest.totalAmount;
-    booking.servicePrice = extensionRequest.servicePrice;
-    await booking.save();
+    if (!booking || booking.status !== 'booked') {
+      return next(new AppError('This booking can no longer be changed', 400));
+    }
+
+    // The price was worked out against the booking as it was then; refuse if it has changed since
+    const baseline = extensionRequest.baseline;
+    if (
+      baseline?.totalPrice != null &&
+      (new Date(baseline.checkIn).getTime() !== new Date(booking.checkIn).getTime() ||
+        new Date(baseline.checkOut).getTime() !== new Date(booking.checkOut).getTime() ||
+        Math.abs(Number(baseline.totalPrice) - Number(booking.totalPrice)) > 0.005)
+    ) {
+      await expireExtensionRequest(extensionRequest._id, {
+        reason: 'the booking was changed after it was sent'
+      });
+      return next(
+        new AppError(
+          'The booking changed after this request was sent, so it was closed. Please send a new request.',
+          409
+        )
+      );
+    }
+
+    if (!(await claimRequest())) {
+      return next(new AppError('This request is already being handled', 409));
+    }
+
+    try {
+      if (extensionRequest.paymentIntentId) {
+        // Hold placed when the change was requested: charge it now
+        const heldIntent = await stripe.paymentIntents.retrieve(extensionRequest.paymentIntentId);
+        let capturedPayment = heldIntent;
+        if (heldIntent.status === 'requires_capture') {
+          capturedPayment = await capturePaymentIntent({
+            paymentIntentId: extensionRequest.paymentIntentId
+          });
+        } else if (heldIntent.status !== 'succeeded') {
+          throw new Error('The hold on the card is no longer available');
+        }
+        await recordPayment({
+          payoutId: capturedPayment?.id,
+          customerId: extensionRequest?.customerId?._id,
+          bookingId: extensionRequest?.bookingId?._id,
+          bank: capturedPayment?.payment_method?.card?.brand || 'N/A',
+          totalAmount: Math.round(capturedPayment?.amount / 100),
+          status: 'Paid',
+          extensionRequestId: extensionRequest._id
+        });
+        extensionRequest.paymentStatus = 'captured';
+      } else if (chargeAmount > 0) {
+        // Vendor-created change: the customer's acceptance is what authorizes the charge
+        const customer = extensionRequest.customerId;
+        const paymentIntent = await createPaymentIntents({
+          amount: extensionPayments.toCents(chargeAmount),
+          currency: 'usd',
+          paymentMethodId: customer?.paymentMethodid,
+          customerId: customer?.stripeCustomerId,
+          instantBookingCheck: true
+        });
+        if (paymentIntent.status !== 'succeeded') {
+          await cancelPaymentIntent({ paymentIntentId: paymentIntent.id }).catch(() => {});
+          throw new Error('requires_action');
+        }
+        extensionRequest.paymentIntentId = paymentIntent.id;
+        await recordPayment({
+          payoutId: paymentIntent.id,
+          customerId: customer?._id,
+          bookingId: booking._id,
+          bank: paymentIntent?.cardDetails?.brand || 'N/A',
+          totalAmount: Math.round(paymentIntent.amount / 100),
+          status: 'Paid',
+          extensionRequestId: extensionRequest._id
+        });
+        extensionRequest.paymentStatus = 'captured';
+      } else if (refundAmount > 0) {
+        const refunds = await extensionPayments.refundBookingAmount(
+          booking,
+          extensionPayments.toCents(refundAmount),
+          { extensionRequestId: String(extensionRequest._id), bookingId: String(booking._id) }
+        );
+        await recordPayment({
+          payoutId: refunds.map((r) => r.id).join(', '),
+          customerId: extensionRequest.customerId?._id,
+          bookingId: booking._id,
+          bank: 'N/A',
+          totalAmount: refundAmount,
+          status: 'Refunded',
+          refundType: 'Partial',
+          extensionRequestId: extensionRequest._id
+        });
+        extensionRequest.paymentStatus = 'refunded';
+      }
+    } catch (err) {
+      console.error('Extension payment failed on accept:', err.message);
+      const heldPaymentFailed = Boolean(extensionRequest.paymentIntentId);
+      const customerAccepting = req.user.role === 'customer';
+
+      if (heldPaymentFailed) {
+        // The held payment can no longer be collected (for example the hold lapsed): close the request
+        const closed = await Extensionbooking.findOneAndUpdate(
+          { _id: extensionRequest._id, request: 'processing' },
+          { request: 'expired', paymentStatus: 'failed' }
+        );
+        if (closed) {
+          sendNotification({
+            userId: extensionRequest.customerId?._id,
+            title: 'Booking Change Payment Failed',
+            message: `The payment of ${money(chargeAmount)} for your booking change could not be collected, so the change was not applied and you were not charged. Please send a new request.`,
+            type: 'booking',
+            fortype: 'booking_extension_rejected',
+            permission: 'bookings',
+            linkUrl: '/user-dashboard/user-booking?tab=5'
+          });
+        }
+        return next(
+          new AppError(
+            customerAccepting
+              ? extensionPayments.describePaymentError(err)
+              : "The customer's payment could not be collected, so this request was closed and the booking was not changed.",
+            402
+          )
+        );
+      }
+      // Nothing was charged: put the request back to pending so it can be retried (for example with a new card)
+      await releaseClaim();
+      return next(
+        new AppError(
+          customerAccepting
+            ? extensionPayments.describePaymentError(err)
+            : 'The payment or refund for this change could not be completed. Please try again or contact support.',
+          402
+        )
+      );
+    }
+
+    extensionRequest.request = 'accept';
+    if (requestedByVendor && req.user.role === 'customer') {
+      extensionRequest.consent = {
+        amount: chargeAmount,
+        termsVersion: consentTermsVersion,
+        acceptedAt: new Date()
+      };
+    }
+    // Money has moved: record that first so a later failure can never cause a second charge
+    await Extensionbooking.updateOne(
+      { _id: extensionRequest._id },
+      {
+        request: 'accept',
+        paymentStatus: extensionRequest.paymentStatus,
+        paymentIntentId: extensionRequest.paymentIntentId,
+        consent: extensionRequest.consent
+      }
+    );
+    try {
+      booking.checkIn = extensionRequest.startDate;
+      booking.checkOut = extensionRequest.endDate;
+      booking.totalPrice = extensionRequest.totalAmount;
+      booking.servicePrice = extensionRequest.servicePrice;
+      await booking.save();
+    } catch (err) {
+      console.error(
+        `[extension][RECONCILE] payment completed but booking ${booking._id} was not updated for request ${extensionRequest._id}:`,
+        err.message
+      );
+      return next(
+        new AppError(
+          'The payment went through but the booking could not be updated. Support has been flagged to fix this; you will not be charged again.',
+          500
+        )
+      );
+    }
+
+    if (chargeAmount > 0) moneyNote = ` Your card was charged ${money(chargeAmount)} for the change.`;
+    if (refundAmount > 0) moneyNote = ` A refund of ${money(refundAmount)} was issued to your original payment method.`;
 
     // Send notifications based on who approved
     if (req.user.role === 'vendor') {
@@ -1942,7 +2231,7 @@ const acceptorRejectExtension = catchAsync(async (req, res, next) => {
       sendNotification({
         userId: extensionRequest?.customerId?._id,
         title: 'Booking Extension Accepted',
-        message: `Your booking extension request has been accepted by ${req.user?.firstName} ${req.user?.lastName} until ${new Date(extensionRequest.endDate).toLocaleDateString()}`,
+        message: `Your booking extension request has been accepted by ${req.user?.firstName} ${req.user?.lastName} until ${new Date(extensionRequest.endDate).toLocaleDateString()}.${moneyNote}`,
         type: 'booking',
         fortype: 'booking_extension_accepted',
         permission: 'bookings',
@@ -1960,15 +2249,30 @@ const acceptorRejectExtension = catchAsync(async (req, res, next) => {
         linkUrl: `/vendor-dashboard/booking-extend/details/${extensionRequest.bookingId}`
       });
     }
-  } else if (action === 'reject') {
+  } else {
     // Handle rejection logic
-    extensionRequest.request = 'reject';
-    if (extensionRequest?.paymentIntentId) {
-      const cancelPaymentIntentd = await cancelPaymentIntent({
-        paymentIntentId: extensionRequest?.paymentIntentId
-      });
-      console.log('cancelPaymentIntent', cancelPaymentIntentd);
+    if (!(await claimRequest())) {
+      return next(new AppError('This request is already being handled', 409));
     }
+    extensionRequest.request = 'reject';
+    extensionRequest.rejectReason = reason;
+    if (extensionRequest?.paymentIntentId) {
+      try {
+        const cancelPaymentIntentd = await cancelPaymentIntent({
+          paymentIntentId: extensionRequest?.paymentIntentId
+        });
+        console.log('cancelPaymentIntent', cancelPaymentIntentd);
+        extensionRequest.paymentStatus = 'released';
+      } catch (err) {
+        // The hold lapses on its own; the rejection must still go through
+        console.error('Could not release hold on reject:', err.message);
+        extensionRequest.paymentStatus = 'failed';
+      }
+    }
+    if (extensionRequest.paymentStatus === 'released') {
+      moneyNote = ' The hold on your card was released and you were not charged.';
+    }
+    const reasonNote = reason ? ` Reason: ${reason}` : '';
 
     // Send notifications based on who rejected
     if (req.user.role === 'vendor') {
@@ -1976,7 +2280,7 @@ const acceptorRejectExtension = catchAsync(async (req, res, next) => {
       sendNotification({
         userId: extensionRequest?.customerId?._id,
         title: 'Booking Extension Rejected',
-        message: `Your booking extension request has been rejected by ${req.user?.firstName} ${req.user?.lastName}`,
+        message: `Your booking extension request has been rejected by ${req.user?.firstName} ${req.user?.lastName}.${moneyNote}${reasonNote}`,
         type: 'booking',
         fortype: 'booking_extension_rejected',
         permission: 'bookings',
@@ -1987,15 +2291,13 @@ const acceptorRejectExtension = catchAsync(async (req, res, next) => {
       sendNotification({
         userId: extensionRequest?.vendorId?._id,
         title: 'Booking Extension Rejected',
-        message: `${req.user?.firstName} ${req.user?.lastName} has rejected your booking extension request`,
+        message: `${req.user?.firstName} ${req.user?.lastName} has rejected your booking extension request.${reasonNote}`,
         type: 'booking',
         fortype: 'booking_extension_rejected',
         permission: 'bookings',
         linkUrl: `/vendor-dashboard/booking-extend/details/${extensionRequest.bookingId}`
       });
     }
-  } else {
-    return next(new AppError('Invalid action', 400));
   }
   await extensionRequest.save();
 
@@ -2097,17 +2399,19 @@ const getBookingExtensionHistory = catchAsync(async (req, res, next) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
 
-  const extensionHistory = await Extensionbooking.find({
-    bookingId: bookingId
-  })
+  // Customers only see their own bookings' history and vendors only their own; admins see everything
+  const filter = { bookingId: bookingId };
+  if (req.user.role === 'customer') filter.customerId = req.user._id;
+  if (req.user.role === 'vendor') filter.vendorId = req.user._id;
+
+  const extensionHistory = await Extensionbooking.find(filter)
     .populate('customerId')
     .populate('vendorId')
+    .sort({ createdAt: -1 })
     .skip((page - 1) * limit)
     .limit(limit);
 
-  const totalHistory = await Extensionbooking.countDocuments({
-    bookingId: bookingId
-  });
+  const totalHistory = await Extensionbooking.countDocuments(filter);
 
   res.status(200).json({
     status: 'success',
@@ -2345,6 +2649,7 @@ const cancelExtensionRequest = catchAsync(async (req, res, next) => {
   // Cancel the Stripe payment intent if present
   if (extensionRequest.paymentIntentId) {
     await cancelPaymentIntent({ paymentIntentId: extensionRequest.paymentIntentId });
+    extensionRequest.paymentStatus = 'released';
   }
 
   extensionRequest.request = 'cancelled';

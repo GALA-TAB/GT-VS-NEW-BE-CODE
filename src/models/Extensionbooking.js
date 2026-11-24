@@ -44,8 +44,43 @@ const ExtensionBookingSchema = new Schema(
     },
     request: {
       type: String,
-      enum: ['accept', 'reject', 'pending', 'cancelled'],
+      // processing is a short internal lock held while the payment for an accepted request is handled
+      enum: ['accept', 'reject', 'pending', 'cancelled', 'expired', 'processing'],
       default: 'pending'
+    },
+    // Pending requests auto-expire (and any card hold is released) after this time
+    expiresAt: {
+      type: Date,
+      default: null
+    },
+    // none: no money moves | authorized: card hold placed | captured: charged
+    // released: hold released | refunded: price decrease refunded | failed: charge/refund failed
+    paymentStatus: {
+      type: String,
+      enum: ['none', 'authorized', 'captured', 'released', 'refunded', 'failed'],
+      default: 'none'
+    },
+    // Amount returned to the customer when the change lowers the booking total
+    refundAmount: {
+      type: Number,
+      default: 0
+    },
+    rejectReason: {
+      type: String,
+      trim: true,
+      default: ''
+    },
+    // The booking as it was when this request was priced; used to refuse a stale accept
+    baseline: {
+      checkIn: { type: Date },
+      checkOut: { type: Date },
+      totalPrice: { type: Number }
+    },
+    // What the requester agreed to when submitting the change
+    consent: {
+      amount: { type: Number },
+      termsVersion: { type: String, trim: true },
+      acceptedAt: { type: Date }
     },
     servicePrice: [
       {
