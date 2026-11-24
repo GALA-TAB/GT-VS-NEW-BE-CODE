@@ -5,7 +5,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --test src/utils/referral-program.test.js src/utils/referral-rewards.test.js src/utils/referral-reward-cycle.test.js src/utils/extensionPayments.test.js",
+    "test": "node --test src/utils/referral-program.test.js src/utils/referral-rewards.test.js src/utils/referral-reward-cycle.test.js src/utils/extensionPayments.test.js src/utils/savedCard.test.js",
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "debug": "ndb src/index.js",

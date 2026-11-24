@@ -1,5 +1,7 @@
 const express = require('express');
 const {
+    getMySavedCard,
+    forgetMyCard,
     createBooking,
     updateBookingRequestStatus,
     getAllBookings,
@@ -54,6 +56,9 @@ router.route('/customer')
 
 router.route('/customer/:id')
     .patch(requireAuth, restrictTo(["customer","admin","vendor"]), logActionMiddleware("Cancel Booking","Booking"),cancelBooking);
+
+router.route('/saved-card').get(requireAuth, restrictTo(["customer"]), getMySavedCard);
+router.route('/saved-card/:paymentMethodId').delete(requireAuth, restrictTo(["customer"]), forgetMyCard);
 
 //  Then general routes
 router.route('/')

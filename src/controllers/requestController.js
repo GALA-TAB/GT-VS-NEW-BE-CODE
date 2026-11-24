@@ -8,6 +8,7 @@ const stripe = require('../config/stripe');
 const { requestSchema } = require('../utils/joi/requestValidation');
 const { createPaymentIntents } = require('../utils/stripe-utils/connect-accounts.util');
 const extensionPayments = require('../utils/extensionPayments');
+const { isStripePaymentMethodId, getSavedCard, forgetCard } = require('../utils/savedCard');
 const { expireExtensionRequest } = require('../utils/extensionRequestExpiry');
 const {
   createCustomer,
@@ -115,6 +116,7 @@ const createBooking = catchAsync(async (req, res, next) => {
     checkOut,
     guests,
     paymentMethodid,
+    saveCard,
     paymentSource,
     sharedCartPaymentToken,
     message,
@@ -140,6 +142,8 @@ const createBooking = catchAsync(async (req, res, next) => {
   // customer again. Verified against the backend record below, not trusted
   // as-is from the client.
   const isSharedCartPayment = paymentMethodid === 'shared_cart_payment';
+  // Customers choose at checkout whether the card may be reused for later booking changes
+  const shouldSaveCard = saveCard !== false && saveCard !== 'false';
 
   // ── Text content moderation on booking message ──
   if (message) {
@@ -301,7 +305,7 @@ const createBooking = catchAsync(async (req, res, next) => {
       await Customer.findByIdAndUpdate(userId, {
         $set: {
           stripeCustomerId,
-          paymentMethodid
+          ...(shouldSaveCard && isStripePaymentMethodId(paymentMethodid) ? { paymentMethodid } : {})
         }
       });
     }
@@ -324,11 +328,13 @@ const createBooking = catchAsync(async (req, res, next) => {
       paymentMethodId: paymentMethodid,
       customerId: stripeCustomerId
     });
-    // Attach payment method to the customer
-    await updateCustomer({
-      stripeCustomerId,
-      paymentMethodid
-    });
+    // Make it the customer's default card, unless they chose not to save it
+    if (shouldSaveCard) {
+      await updateCustomer({
+        stripeCustomerId,
+        paymentMethodid
+      });
+    }
   }
 
   // Declared outside the coupon block: the booking agreement below records it
@@ -629,8 +635,11 @@ const createBooking = catchAsync(async (req, res, next) => {
       linkUrl: `/vendor-dashboard/booking-requests`
     });
   }
-  user.paymentMethodid = paymentMethodid;
-  await user.save();
+  // Wallet and shared-cart bookings send placeholder text, never a card to remember
+  if (shouldSaveCard && isStripePaymentMethodId(paymentMethodid)) {
+    user.paymentMethodid = paymentMethodid;
+    await user.save();
+  }
   return res.status(200).json({
     status: 'success',
     message: 'Booking created successfully',
@@ -1812,17 +1821,67 @@ const extendBooking = catchAsync(async (req, res, next) => {
   // Customer and admin changes are paid on the saved card. Vendor-created changes are charged only
   // when the customer accepts, so a vendor action never places a hold on the customer's card.
   if (chargeAmount > 0 && req.user.role !== 'vendor') {
+    const payer = findbooking.user;
+    // A customer may pay with a card they just entered instead of the one on file
+    const newCardId = req.user.role === 'customer' ? req.body.paymentMethodid : undefined;
+    const keepNewCard = req.body.saveCard !== false && req.body.saveCard !== 'false';
+    let paymentMethodId;
+    let payerStripeId = payer?.stripeCustomerId;
+    try {
+      if (newCardId) {
+        if (!isStripePaymentMethodId(newCardId)) {
+          return next(new AppError('That card could not be read. Please enter it again.', 400));
+        }
+        if (!payerStripeId) {
+          const stripeCustomer = await createCustomer({
+            email: payer.email,
+            name: `${payer.firstName || ''} ${payer.lastName || ''}`.trim()
+          });
+          payerStripeId = stripeCustomer.id;
+          await Customer.findByIdAndUpdate(payer._id, { $set: { stripeCustomerId: payerStripeId } });
+        }
+        await attachPaymentMethod({ paymentMethodId: newCardId, customerId: payerStripeId });
+        paymentMethodId = newCardId;
+      } else {
+        paymentMethodId = (await getSavedCard(payer))?.id;
+      }
+    } catch (err) {
+      console.error('Could not prepare the card for the change:', err.message);
+      return next(new AppError(extensionPayments.describePaymentError(err), 402));
+    }
+    if (!paymentMethodId) {
+      return next(
+        new AppError('There is no saved card on your account. Please enter a card to pay for this change.', 400)
+      );
+    }
+
     try {
       paymentIntent = await createPaymentIntents({
         amount: Math.round(totalPriceforConfirm * 100),
         currency: 'usd',
-        paymentMethodId: findbooking?.user?.paymentMethodid,
-        customerId: findbooking?.user?.stripeCustomerId,
+        paymentMethodId,
+        customerId: payerStripeId,
         instantBookingCheck: req.user.role === 'admin'
       });
     } catch (err) {
       console.error('Extension payment failed:', err.message);
+      if (newCardId && !keepNewCard) {
+        await stripe.paymentMethods.detach(newCardId).catch(() => {});
+      }
       return next(new AppError(extensionPayments.describePaymentError(err), 402));
+    }
+    if (newCardId) {
+      try {
+        if (keepNewCard) {
+          await Customer.findByIdAndUpdate(payer._id, { $set: { paymentMethodid: newCardId } });
+          await updateCustomer({ stripeCustomerId: payerStripeId, paymentMethodid: newCardId });
+        } else {
+          // The authorization is already placed, so removing the card does not affect it
+          await stripe.paymentMethods.detach(newCardId);
+        }
+      } catch (err) {
+        console.error('Could not finish saving or removing the new card:', err.message);
+      }
     }
     if (!extensionPayments.isIntentUsable(paymentIntent)) {
       try {
@@ -2115,7 +2174,7 @@ const acceptorRejectExtension = catchAsync(async (req, res, next) => {
         const paymentIntent = await createPaymentIntents({
           amount: extensionPayments.toCents(chargeAmount),
           currency: 'usd',
-          paymentMethodId: customer?.paymentMethodid,
+          paymentMethodId: (await getSavedCard(customer))?.id,
           customerId: customer?.stripeCustomerId,
           instantBookingCheck: true
         });
@@ -2705,7 +2764,31 @@ const cancelExtensionRequest = catchAsync(async (req, res, next) => {
   });
 });
 
+// The card a customer can reuse to pay for booking changes, or null when none is saved
+const getMySavedCard = catchAsync(async (req, res) => {
+  const customer = await Customer.findById(req.user._id);
+  const card = await getSavedCard(customer);
+  res.status(200).json({ status: 'success', data: { card } });
+});
+
+// Removes a card the customer chose not to save at checkout
+const forgetMyCard = catchAsync(async (req, res) => {
+  const customer = await Customer.findById(req.user._id);
+  const { paymentMethodId } = req.params;
+  const removed = await forgetCard(customer, paymentMethodId).catch((err) => {
+    console.error('Could not forget card:', err.message);
+    return false;
+  });
+  if (removed && customer.paymentMethodid === paymentMethodId) {
+    customer.paymentMethodid = undefined;
+    await customer.save();
+  }
+  res.status(200).json({ status: 'success', data: { removed } });
+});
+
 module.exports = {
+  getMySavedCard,
+  forgetMyCard,
   createBooking,
   updateBookingRequestStatus,
   getAllBookings,
