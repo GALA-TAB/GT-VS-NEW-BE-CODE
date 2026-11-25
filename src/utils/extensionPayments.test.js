@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   planExtensionPayment,
+  validateChangeWindow,
   getTaxRate,
   isExpired,
   isIntentUsable,
@@ -83,4 +84,21 @@ test('payment errors become customer-friendly messages', () => {
   assert.match(describePaymentError('requires_action'), /extra verification/);
   assert.match(describePaymentError(new Error('Your card was declined.')), /declined/);
   assert.match(describePaymentError(new Error('boom')), /could not process/);
+});
+
+test('a change window can move or shrink while the stay is in the future', () => {
+  const now = new Date('2026-06-01T00:00:00Z');
+  const booking = { checkIn: '2026-06-10T10:00:00Z', checkOut: '2026-06-10T18:00:00Z' };
+  assert.equal(validateChangeWindow(booking, '2026-06-10T12:00:00Z', '2026-06-10T16:00:00Z', now), null);
+  assert.equal(validateChangeWindow(booking, '2026-06-20T10:00:00Z', '2026-06-20T18:00:00Z', now), null);
+  assert.match(validateChangeWindow(booking, '2026-05-30T10:00:00Z', '2026-06-10T18:00:00Z', now), /future/);
+  assert.match(validateChangeWindow(booking, '2026-06-10T18:00:00Z', '2026-06-10T10:00:00Z', now), /after the start/);
+});
+
+test('a stay that has started keeps its start but can still change its end', () => {
+  const now = new Date('2026-06-10T12:00:00Z');
+  const booking = { checkIn: '2026-06-10T10:00:00Z', checkOut: '2026-06-10T18:00:00Z' };
+  assert.equal(validateChangeWindow(booking, '2026-06-10T10:00:00Z', '2026-06-10T20:00:00Z', now), null);
+  assert.match(validateChangeWindow(booking, '2026-06-10T11:00:00Z', '2026-06-10T20:00:00Z', now), /already started/);
+  assert.match(validateChangeWindow(booking, '2026-06-10T10:00:00Z', '2026-06-10T11:00:00Z', now), /future/);
 });

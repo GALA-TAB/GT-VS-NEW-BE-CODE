@@ -357,9 +357,9 @@ Admin Request → Auto-Approved → Booking Extended
 1. ✅ **Booking exists** and status is `booked`
 2. ✅ **Authorization** - User has permission to extend
 3. ✅ **No conflicts** - No overlapping bookings or calendar events
-4. ✅ **Future dates** - Start date must be after today
+4. ✅ **Future dates** - Start date must be after today (a stay that has already started keeps its start; only its end can change)
 5. ✅ **Valid date range** - End date must be after start date
-6. ✅ **Duration increase** - New duration ≥ current duration
+6. ✅ **Any change allowed** - The window can be longer, shorter or moved, and add-ons can be added or removed. A price increase is charged on accept; a decrease is fully refunded (tax included). The host must always approve.
 7. ✅ **Service availability** - Service not booked/reserved for new dates
 
 ### Accept/Reject Validation:
@@ -518,9 +518,11 @@ All extension notifications are sent through:
 | Unauthorized | 403 | "You are not authorized to extend this booking" |
 | Conflicting booking | 400 | "This service is already booked for the selected dates" |
 | Calendar conflict | 400 | "This service is already booked or reserved for the selected dates" |
-| Invalid dates | 400 | "Extension start date must be after today" |
-| Invalid date range | 400 | "Extension end date must be after start date" |
-| Duration too short | 400 | "Extension duration must be greater or equal to current booking duration" |
+| Invalid dates | 400 | "The new start must be in the future." |
+| Started stay moved | 400 | "This booking has already started, so its start time can no longer be changed." |
+| Invalid date range | 400 | "The end must be after the start." |
+| Outside open hours | 400 | "The new dates must fall within the days and hours this service is open." |
+| No change | 400 | "Nothing about this booking has changed." |
 | Extension not found | 404 | "Extension request not found" |
 | Invalid action | 400 | "Invalid action" |
 
@@ -570,7 +572,7 @@ All extension notifications are sent through:
 - [ ] Calendar conflicts detected
 - [ ] Past dates rejected
 - [ ] Invalid date ranges rejected
-- [ ] Duration decrease rejected
+- [ ] Duration decrease creates a request that refunds the difference on accept
 
 ---
 

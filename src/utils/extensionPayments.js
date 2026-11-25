@@ -46,6 +46,29 @@ const planExtensionPayment = (previousPrice, currentPrice, taxRate = 0) => {
   };
 };
 
+// Rules for the new window of a change request. The window may be longer, shorter or moved
+// (the host still has to approve it), but the part of a stay that has already started can't be rewritten.
+// Returns an error message, or null when the window is acceptable.
+const validateChangeWindow = (booking, startDate, endDate, now = new Date()) => {
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return 'Please choose valid dates for this change.';
+  }
+  if (start >= end) return 'The end must be after the start.';
+
+  const hasStarted = new Date(booking.checkIn).getTime() <= now.getTime();
+  if (hasStarted) {
+    if (start.getTime() !== new Date(booking.checkIn).getTime()) {
+      return 'This booking has already started, so its start time can no longer be changed.';
+    }
+    if (end <= now) return 'The new end must be in the future.';
+  } else if (start <= now) {
+    return 'The new start must be in the future.';
+  }
+  return null;
+};
+
 // A manual-capture intent is usable once it is held; an automatic one once it has succeeded.
 const isIntentUsable = (paymentIntent) =>
   Boolean(paymentIntent) && ['requires_capture', 'succeeded'].includes(paymentIntent.status);
@@ -127,6 +150,7 @@ module.exports = {
   isExpired,
   getTaxRate,
   planExtensionPayment,
+  validateChangeWindow,
   isIntentUsable,
   describePaymentError,
   getRefundableCents,

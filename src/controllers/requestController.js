@@ -1690,28 +1690,30 @@ const extendBooking = catchAsync(async (req, res, next) => {
     }
   }
 
+  const windowError = extensionPayments.validateChangeWindow(findbooking, startDate, endDate);
+  if (windowError) {
+    return next(new AppError(windowError, 400));
+  }
+
+  // The window can move, so any overlap with another booking or blocked time is a conflict
   const existingBooking = await Booking.findOne({
     service: findbooking.service._id,
     status: { $in: ['pending', 'booked'] },
     _id: { $ne: findbooking._id },
-    $or: [
-      {
-        checkIn: { $lt: new Date(startDate) },
-        checkOut: { $gt: new Date(endDate) }
-      }
-    ]
+    checkIn: { $lt: new Date(endDate) },
+    checkOut: { $gt: new Date(startDate) }
   });
   const checkCalendar = await Calendar.findOne({
     $or: [
       {
         serviceId: findbooking.service._id,
-        start: { $lt: new Date(startDate) },
-        end: { $gt: new Date(endDate) }
+        start: { $lt: new Date(endDate) },
+        end: { $gt: new Date(startDate) }
       },
       {
         userId: findbooking?.service?.vendorId?._id.toString(),
-        start: { $lt: new Date(startDate) },
-        end: { $gt: new Date(endDate) }
+        start: { $lt: new Date(endDate) },
+        end: { $gt: new Date(startDate) }
       }
     ]
   });
@@ -1742,32 +1744,19 @@ const extendBooking = catchAsync(async (req, res, next) => {
     return next(new AppError(bufferCheck.reason, 400));
   }
 
-  const today = new Date();
-  if (new Date(startDate) <= today) {
-    return next(new AppError('Extension start date must be after today', 400));
-  }
-  if (new Date(startDate) >= new Date(endDate)) {
-    return next(new AppError('Extension end date must be after start date', 400));
-  }
-
-  const alreadybookingduration = checkBookingDatesForExtension(
-    findbooking.checkIn,
-    findbooking.checkOut,
-    findbooking.service.pricingModel,
-    findbooking.service.serviceDays
-  );
-
-  const newbookingduration = checkBookingDatesForExtension(
-    startDate,
-    endDate,
-    findbooking.service.pricingModel,
-    findbooking.service.serviceDays
-  );
-
-  if (newbookingduration < alreadybookingduration) {
-    return next(
-      new AppError('Extension duration must be greater or equal to current booking duration', 400)
+  // A shorter or moved window is allowed, but it must still cover some of the service's open hours
+  if (['hourly', 'daily'].includes(findbooking.service.pricingModel)) {
+    const newbookingduration = checkBookingDatesForExtension(
+      startDate,
+      endDate,
+      findbooking.service.pricingModel,
+      findbooking.service.serviceDays
     );
+    if (newbookingduration <= 0) {
+      return next(
+        new AppError('The new dates must fall within the days and hours this service is open.', 400)
+      );
+    }
   }
 
   const previousPrice = getServiceBookingPrice(
@@ -1800,6 +1789,12 @@ const extendBooking = catchAsync(async (req, res, next) => {
       currentPrice,
       extensionPayments.getTaxRate(findbooking)
     );
+  const windowUnchanged =
+    new Date(startDate).getTime() === new Date(findbooking.checkIn).getTime() &&
+    new Date(endDate).getTime() === new Date(findbooking.checkOut).getTime();
+  if (windowUnchanged && deltaBase === 0) {
+    return next(new AppError('Nothing about this booking has changed.', 400));
+  }
   // The booking's stored total includes tax (and any discount), so the new total is that total plus
   // the tax-inclusive change rather than the freshly computed pre-tax price
   const newBookingTotal = parseFloat(((findbooking.totalPrice || 0) + deltaTotal).toFixed(2));
