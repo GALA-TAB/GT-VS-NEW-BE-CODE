@@ -1744,15 +1744,22 @@ const extendBooking = catchAsync(async (req, res, next) => {
     return next(new AppError(bufferCheck.reason, 400));
   }
 
-  // A shorter or moved window is allowed, but it must still cover some of the service's open hours
-  if (['hourly', 'daily'].includes(findbooking.service.pricingModel)) {
-    const newbookingduration = checkBookingDatesForExtension(
-      startDate,
-      endDate,
-      findbooking.service.pricingModel,
-      findbooking.service.serviceDays
-    );
-    if (newbookingduration <= 0) {
+  // A changed window must still cover some of the service's open hours. An add-on-only change keeps
+  // the booked window, and it is skipped if the booked window itself doesn't measure (e.g. timezone).
+  const windowMoved =
+    new Date(startDate).getTime() !== new Date(findbooking.checkIn).getTime() ||
+    new Date(endDate).getTime() !== new Date(findbooking.checkOut).getTime();
+  if (windowMoved && ['hourly', 'daily'].includes(findbooking.service.pricingModel)) {
+    const openHours = (from, to) =>
+      checkBookingDatesForExtension(
+        from,
+        to,
+        findbooking.service.pricingModel,
+        findbooking.service.serviceDays
+      );
+    const newbookingduration = openHours(startDate, endDate);
+    const bookedDuration = openHours(findbooking.checkIn, findbooking.checkOut);
+    if (bookedDuration > 0 && newbookingduration <= 0) {
       return next(
         new AppError('The new dates must fall within the days and hours this service is open.', 400)
       );
