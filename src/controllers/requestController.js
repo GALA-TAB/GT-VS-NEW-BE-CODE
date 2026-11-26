@@ -1755,7 +1755,8 @@ const extendBooking = catchAsync(async (req, res, next) => {
         from,
         to,
         findbooking.service.pricingModel,
-        findbooking.service.serviceDays
+        findbooking.service.serviceDays,
+        timezone || 'UTC'
       );
     const newbookingduration = openHours(startDate, endDate);
     const bookedDuration = openHours(findbooking.checkIn, findbooking.checkOut);

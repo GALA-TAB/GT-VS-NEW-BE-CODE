@@ -155,7 +155,7 @@ const checkBookingDates = async (checkIn, checkOut, listingExists, service) => {
   return { existingBooking, checkCalendar };
 };
 
-const checkBookingDatesForExtension = (pricingModel, checkIn, checkOut, serviceDays) => {
+const checkBookingDatesForExtension = (pricingModel, checkIn, checkOut, serviceDays, serviceTimezone = 'UTC') => {
   if (
     !pricingModel ||
     !checkIn ||
@@ -168,8 +168,8 @@ const checkBookingDatesForExtension = (pricingModel, checkIn, checkOut, serviceD
 
   let totalDuration = 0;
 
-  const start = dayjs(checkIn);
-  const end = dayjs(checkOut);
+  const start = dayjs.utc(checkIn).tz(serviceTimezone);
+  const end = dayjs.utc(checkOut).tz(serviceTimezone);
   if (pricingModel === 'daily' && start.isSame(end)) {
     return 0;
   }
@@ -181,13 +181,13 @@ const checkBookingDatesForExtension = (pricingModel, checkIn, checkOut, serviceD
     const dayInfo = serviceDays.find((sd) => sd.day === dayName);
     if (dayInfo) {
       const dayDateStr = current.format('YYYY-MM-DD');
-      let serviceStart = dayjs(`${dayDateStr} ${dayInfo.startTime}`, 'YYYY-MM-DD HH:mm').local();
-      let serviceEnd = dayjs(`${dayDateStr} ${dayInfo.endTime}`, 'YYYY-MM-DD HH:mm').local();
+      let serviceStart = dayjs.tz(`${dayDateStr} ${dayInfo.startTime}`, 'YYYY-MM-DD HH:mm', serviceTimezone);
+      let serviceEnd = dayjs.tz(`${dayDateStr} ${dayInfo.endTime}`, 'YYYY-MM-DD HH:mm', serviceTimezone);
       if (serviceEnd.isBefore(serviceStart)) {
         serviceEnd = serviceEnd.add(1, 'day'); // Handle overnight
       }
-      const checkInLocal = dayjs(checkIn).local();
-      const checkOutLocal = dayjs(checkOut).local();
+      const checkInLocal = start;
+      const checkOutLocal = end;
 
       if (pricingModel === 'hourly') {
         // Calculate only overlapping hours
